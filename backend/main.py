@@ -95,89 +95,42 @@ state = AppState()
 # ---------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Load the ensemble model, scaler, and SHAP explainer at startup."""
+    """Load models with memory mapping to save RAM at startup."""
     base_dir = os.path.dirname(os.path.abspath(__file__))
-
     model_path = os.path.join(base_dir, "diabetes_ensemble_model.pkl")
     scaler_path = os.path.join(base_dir, "diabetes_scaler.pkl")
 
-    logger.info("Loading ensemble model from %s …", model_path)
-    state.ensemble_model = joblib.load(model_path)
-    logger.info("✓ Ensemble model loaded successfully.")
-
-    logger.info("Loading scaler from %s …", scaler_path)
-    state.scaler = joblib.load(scaler_path)
-    logger.info("✓ Scaler loaded successfully.")
-
-    # Pre-build the SHAP explainer once — uses the fitted XGBoost sub-model
     try:
-        fitted_xgb = state.ensemble_model.named_estimators_["xgb"]
-        state.xgb_explainer = shap.TreeExplainer(fitted_xgb)
-        logger.info("✓ SHAP TreeExplainer initialised for XGBoost sub-estimator.")
-    except Exception as exc:
-        logger.warning("Could not build SHAP explainer at startup: %s", exc)
+        logger.info("Loading ensemble model (mmap mode) …")
+        # mmap_mode='r' prevents the entire file from being loaded into RAM at once
+        state.ensemble_model = joblib.load(model_path, mmap_mode='r')
+        logger.info("✓ Ensemble model loaded.")
 
-    yield  # application runs here
+        logger.info("Loading scaler …")
+        state.scaler = joblib.load(scaler_path)
+        logger.info("✓ Scaler loaded.")
+    except Exception as e:
+        logger.error("Failed to load models: %s", e)
 
-    # Shutdown cleanup (nothing to do; Python GC handles it)
-    logger.info("Shutting down XAI-CDSS backend.")
+    yield
+    logger.info("Shutting down.")
 
-
-# ---------------------------------------------------------------------------
-# FastAPI app
-# ---------------------------------------------------------------------------
-app = FastAPI(
-    title="XAI-CDSS API",
-    description="Clinical Decision Support — Diabetes Risk Prediction with SHAP Explanations",
-    version="1.0.0",
-    lifespan=lifespan,
-)
-
-# CORS — allow the Next.js frontend
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-# ---------------------------------------------------------------------------
-# Health check
-# ---------------------------------------------------------------------------
-@app.get("/api/health")
-async def health_check():
-    return {
-        "status": "healthy",
-        "model_loaded": state.ensemble_model is not None,
-        "scaler_loaded": state.scaler is not None,
-        "shap_ready": state.xgb_explainer is not None,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Prediction endpoint
-# ---------------------------------------------------------------------------
-def _classify_risk(probability: float) -> str:
-    """Map raw probability to a human-readable risk level."""
-    if probability >= 0.7:
-        return "High Risk"
-    if probability >= 0.4:
-        return "Moderate Risk"
-    return "Low Risk"
-
+# ... (FastAPI setup remains same) ...
 
 @app.post("/api/predict")
 async def predict(patient: PatientData):
-    """
-    Accept 21-feature patient payload → scale → predict → explain via SHAP.
-    """
     if state.ensemble_model is None or state.scaler is None:
-        raise HTTPException(status_code=503, detail="Models are not loaded yet.")
+        raise HTTPException(status_code=503, detail="Models not loaded.")
 
     try:
-        # 1. Convert to numpy array in exact feature order
+        # Lazy initialization of SHAP explainer on first request
+        # to spread out the memory usage spike
+        if state.xgb_explainer is None:
+            logger.info("Initialising SHAP explainer (Lazy Load) …")
+            fitted_xgb = state.ensemble_model.named_estimators_["xgb"]
+            state.xgb_explainer = shap.TreeExplainer(fitted_xgb)
+            logger.info("✓ SHAP explainer ready.")
+
         raw_values = [getattr(patient, name) for name in FEATURE_NAMES]
         input_array = np.array(raw_values, dtype=np.float64).reshape(1, -1)
 

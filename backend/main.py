@@ -3,10 +3,13 @@ XAI-CDSS Backend — FastAPI server for Clinical Decision Support
 Serves a Soft Voting Ensemble (Logistic Regression, Random Forest, XGBoost)
 trained on the BRFSS 2015 diabetes dataset.
 Provides SHAP-based explainability via the fitted XGBoost sub-estimator.
+
+Optimised for Render free tier (512 MB RAM).
 """
 
 from __future__ import annotations
 
+import gc
 import os
 import logging
 from contextlib import asynccontextmanager
@@ -14,7 +17,6 @@ from typing import Any
 
 import joblib
 import numpy as np
-import shap
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -105,6 +107,9 @@ async def lifespan(app: FastAPI):
     state.ensemble_model = joblib.load(model_path)
     logger.info("✓ Ensemble model loaded successfully.")
 
+    # Force garbage collection after heavy model load to free temp memory
+    gc.collect()
+
     logger.info("Loading scaler from %s …", scaler_path)
     state.scaler = joblib.load(scaler_path)
     logger.info("✓ Scaler loaded successfully.")
@@ -112,8 +117,12 @@ async def lifespan(app: FastAPI):
     # Pre-build the SHAP explainer once — uses the fitted XGBoost sub-model
     try:
         fitted_xgb = state.ensemble_model.named_estimators_["xgb"]
+        # Import shap lazily to reduce peak memory — only loaded when needed
+        import shap
         state.xgb_explainer = shap.TreeExplainer(fitted_xgb)
         logger.info("✓ SHAP TreeExplainer initialised for XGBoost sub-estimator.")
+        # Force GC again after SHAP init
+        gc.collect()
     except Exception as exc:
         logger.warning("Could not build SHAP explainer at startup: %s", exc)
 
@@ -133,10 +142,21 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS — allow the Next.js frontend
+# CORS — allow the Next.js frontend (add your deployed frontend URL too)
+ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    # Add your deployed frontend URL here, e.g.:
+    # "https://your-frontend.vercel.app",
+]
+
+# Also allow any origin passed via environment variable
+_extra_origin = os.environ.get("FRONTEND_URL")
+if _extra_origin:
+    ALLOWED_ORIGINS.append(_extra_origin)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -144,7 +164,7 @@ app.add_middleware(
 
 
 # ---------------------------------------------------------------------------
-# Health check
+# Health check (also used as keep-alive ping target)
 # ---------------------------------------------------------------------------
 @app.get("/api/health")
 async def health_check():
@@ -154,6 +174,14 @@ async def health_check():
         "scaler_loaded": state.scaler is not None,
         "shap_ready": state.xgb_explainer is not None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Root endpoint — useful for Render health checks
+# ---------------------------------------------------------------------------
+@app.get("/")
+async def root():
+    return {"status": "ok", "message": "XAI-CDSS API is running"}
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   TriangleAlert as AlertTriangle,
   CircleCheck as CheckCircle2,
@@ -12,6 +12,14 @@ import {
   FileText,
   Stethoscope,
   Target,
+  Sparkles,
+  MessageCircle,
+  Send,
+  Loader2,
+  Bot,
+  User,
+  ChevronDown,
+  RefreshCw,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -28,6 +36,8 @@ import {
   Pie,
   ReferenceLine,
 } from 'recharts';
+
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_BASE_URL || 'http://localhost:8000';
 
 /**
  * assessmentData shape (passed from page.tsx after the API call):
@@ -47,13 +57,293 @@ interface RiskDiagnosticsProps {
   assessmentData: any;
 }
 
+// ─────────────────────────────────────────────────────────────────
+// Simple markdown renderer for Gemini responses
+// ─────────────────────────────────────────────────────────────────
+function renderMarkdown(text: string) {
+  if (!text) return null;
+
+  const lines = text.split('\n');
+  const elements: any[] = [];
+  let listItems: string[] = [];
+  let listType: 'ul' | 'ol' | null = null;
+  let blockKey = 0;
+
+  const flushList = () => {
+    if (listItems.length > 0 && listType) {
+      const Tag = listType === 'ol' ? 'ol' : 'ul';
+      elements.push(
+        <Tag
+          key={`list-${blockKey++}`}
+          className={`${
+            listType === 'ol' ? 'list-decimal' : 'list-disc'
+          } pl-5 space-y-1.5 text-[13px] text-gray-600 leading-relaxed`}
+        >
+          {listItems.map((item, i) => (
+            <li key={i} dangerouslySetInnerHTML={{ __html: formatInline(item) }} />
+          ))}
+        </Tag>
+      );
+      listItems = [];
+      listType = null;
+    }
+  };
+
+  const formatInline = (s: string): string => {
+    return s
+      .replace(/\*\*(.+?)\*\*/g, '<strong class="font-semibold text-gray-900">$1</strong>')
+      .replace(/\*(.+?)\*/g, '<em>$1</em>')
+      .replace(/`(.+?)`/g, '<code class="bg-gray-100 px-1.5 py-0.5 rounded text-xs font-mono text-gray-800">$1</code>');
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    // Headings
+    if (trimmed.startsWith('## ')) {
+      flushList();
+      elements.push(
+        <h3
+          key={`h3-${blockKey++}`}
+          className="text-[15px] font-semibold text-gray-900 mt-5 mb-2 flex items-center gap-2"
+          dangerouslySetInnerHTML={{ __html: formatInline(trimmed.slice(3)) }}
+        />
+      );
+      continue;
+    }
+    if (trimmed.startsWith('### ')) {
+      flushList();
+      elements.push(
+        <h4
+          key={`h4-${blockKey++}`}
+          className="text-sm font-semibold text-gray-800 mt-4 mb-1.5"
+          dangerouslySetInnerHTML={{ __html: formatInline(trimmed.slice(4)) }}
+        />
+      );
+      continue;
+    }
+
+    // Numbered list
+    const olMatch = trimmed.match(/^(\d+)[.)]\s+(.*)/);
+    if (olMatch) {
+      if (listType !== 'ol') flushList();
+      listType = 'ol';
+      listItems.push(olMatch[2]);
+      continue;
+    }
+
+    // Bullet list
+    if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
+      if (listType !== 'ul') flushList();
+      listType = 'ul';
+      listItems.push(trimmed.slice(2));
+      continue;
+    }
+
+    // Empty line
+    if (trimmed === '') {
+      flushList();
+      continue;
+    }
+
+    // Paragraph
+    flushList();
+    elements.push(
+      <p
+        key={`p-${blockKey++}`}
+        className="text-[13px] text-gray-600 leading-relaxed mb-2"
+        dangerouslySetInnerHTML={{ __html: formatInline(trimmed) }}
+      />
+    );
+  }
+
+  flushList();
+  return <div className="space-y-1">{elements}</div>;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Chat message type
+// ─────────────────────────────────────────────────────────────────
+interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: Date;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Quick question suggestions
+// ─────────────────────────────────────────────────────────────────
+const QUICK_QUESTIONS = [
+  "What foods should I eat to reduce my diabetes risk?",
+  "How does my BMI affect my diabetes risk specifically?",
+  "What exercise routine would you recommend for me?",
+  "Can I reverse my diabetes risk completely?",
+  "What medical tests should I get done?",
+  "How does stress affect diabetes risk?",
+];
+
 export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps) {
   const [animateGauge, setAnimateGauge] = useState(false);
+
+  // AI Interpretation state
+  const [aiInterpretation, setAiInterpretation] = useState<string | null>(null);
+  const [interpretationLoading, setInterpretationLoading] = useState(false);
+  const [interpretationError, setInterpretationError] = useState<string | null>(null);
+
+  // Chat state
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState('');
+  const [chatLoading, setChatLoading] = useState(false);
+  const [showChat, setShowChat] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  const chatInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const timer = setTimeout(() => setAnimateGauge(true), 300);
     return () => clearTimeout(timer);
   }, []);
+
+  // Auto-scroll chat to bottom
+  useEffect(() => {
+    if (chatEndRef.current) {
+      chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [chatMessages]);
+
+  // Auto-fetch AI interpretation when data is available
+  useEffect(() => {
+    if (assessmentData?.status === 'success' && !aiInterpretation && !interpretationLoading) {
+      fetchInterpretation();
+    }
+  }, [assessmentData]);
+
+  // -------------------------------------------------------------------
+  // Fetch AI interpretation from Gemini
+  // -------------------------------------------------------------------
+  const fetchInterpretation = async () => {
+    if (!assessmentData || assessmentData.status !== 'success') return;
+
+    setInterpretationLoading(true);
+    setInterpretationError(null);
+
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/interpret`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          risk_probability: assessmentData.risk_probability,
+          risk_level: assessmentData.risk_level,
+          base_value: assessmentData.shap_data?.base_value ?? 0.5,
+          features: assessmentData.shap_data?.features ?? [],
+          patient_payload: assessmentData.payload ?? null,
+        }),
+      });
+
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => ({}));
+        const detail = errBody.detail || `Server responded with ${response.status}`;
+        // Check if it's a quota/rate-limit error
+        if (response.status === 429 || detail.toLowerCase().includes('quota')) {
+          throw new Error(
+            'All AI models have temporarily exceeded their quota limits. ' +
+            'Please wait 1-2 minutes and click "Try Again". ' +
+            'This is a free-tier rate limit and will reset automatically.'
+          );
+        }
+        throw new Error(detail);
+      }
+
+      const result = await response.json();
+      setAiInterpretation(result.interpretation);
+    } catch (err: any) {
+      console.error('AI interpretation failed:', err);
+      const errorMsg = err.message || '';
+      if (errorMsg.includes('quota') || errorMsg.includes('429') || errorMsg.includes('rate')) {
+        setInterpretationError(
+          'AI quota temporarily exceeded. The system tries multiple Gemini models, ' +
+          'but all are currently rate-limited. Please wait 1-2 minutes and try again.'
+        );
+      } else {
+        setInterpretationError(
+          errorMsg || 'Failed to get AI interpretation. Make sure the backend is running.'
+        );
+      }
+    } finally {
+      setInterpretationLoading(false);
+    }
+  };
+
+  // -------------------------------------------------------------------
+  // Send a chat message
+  // -------------------------------------------------------------------
+  const sendChatMessage = async (question?: string) => {
+    const msg = question || chatInput.trim();
+    if (!msg || chatLoading) return;
+
+    const userMessage: ChatMessage = {
+      role: 'user',
+      content: msg,
+      timestamp: new Date(),
+    };
+
+    setChatMessages((prev) => [...prev, userMessage]);
+    setChatInput('');
+    setChatLoading(true);
+
+    try {
+      // Build history for the API (excluding the current message)
+      const history = chatMessages.map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
+
+      const response = await fetch(`${BACKEND_URL}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question: msg,
+          risk_probability: assessmentData.risk_probability,
+          risk_level: assessmentData.risk_level,
+          base_value: assessmentData.shap_data?.base_value ?? 0.5,
+          features: assessmentData.shap_data?.features ?? [],
+          patient_payload: assessmentData.payload ?? null,
+          history,
+        }),
+      });
+
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => ({}));
+        throw new Error(errBody.detail || `Server responded with ${response.status}`);
+      }
+
+      const result = await response.json();
+
+      const assistantMessage: ChatMessage = {
+        role: 'assistant',
+        content: result.response,
+        timestamp: new Date(),
+      };
+
+      setChatMessages((prev) => [...prev, assistantMessage]);
+    } catch (err: any) {
+      console.error('Chat error:', err);
+      const errorMessage: ChatMessage = {
+        role: 'assistant',
+        content: `I'm sorry, I encountered an error: ${err.message}. Please try again.`,
+        timestamp: new Date(),
+      };
+      setChatMessages((prev) => [...prev, errorMessage]);
+    } finally {
+      setChatLoading(false);
+    }
+  };
+
+  const handleChatKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendChatMessage();
+    }
+  };
 
   // -------------------------------------------------------------------
   // Guard: no data yet
@@ -77,7 +367,7 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
             </div>
             <div className="flex items-center justify-center gap-2 text-xs text-gray-400">
               <ArrowRight className="w-3.5 h-3.5" />
-              <span>Navigate to "Patient Assessment" to begin</span>
+              <span>Navigate to &quot;Patient Assessment&quot; to begin</span>
             </div>
           </CardContent>
         </Card>
@@ -496,8 +786,273 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
           </CardContent>
         </Card>
 
-        {/* Clinical Interpretation */}
-        <Card className="animate-fade-in-up stagger-3">
+        {/* ═══════════════════════════════════════════════════════════════
+            AI-POWERED INTERPRETATION (Gemini)
+           ═══════════════════════════════════════════════════════════════ */}
+        <Card className="animate-fade-in-up stagger-3 border-2 border-indigo-100">
+          <CardHeader className="pb-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl">
+                  <Sparkles className="w-4 h-4 text-white" />
+                </div>
+                <div>
+                  <CardTitle className="text-base flex items-center gap-2">
+                    AI-Powered Clinical Interpretation
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[9px] font-semibold bg-gradient-to-r from-indigo-50 to-purple-50 text-indigo-700 rounded-full border border-indigo-200">
+                      <Sparkles className="w-2.5 h-2.5" />
+                      GEMINI AI
+                    </span>
+                  </CardTitle>
+                  <p className="text-[11px] text-gray-400 mt-0.5">
+                    Detailed, human-readable interpretation of SHAP analysis with personalized recommendations
+                  </p>
+                </div>
+              </div>
+              {aiInterpretation && (
+                <button
+                  onClick={fetchInterpretation}
+                  disabled={interpretationLoading}
+                  className="self-start sm:self-auto flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium text-indigo-600 bg-indigo-50 border border-indigo-200 rounded-full hover:bg-indigo-100 transition-colors disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-3 h-3 ${interpretationLoading ? 'animate-spin' : ''}`} />
+                  Regenerate
+                </button>
+              )}
+            </div>
+          </CardHeader>
+          <CardContent>
+            {interpretationLoading ? (
+              <div className="flex flex-col items-center justify-center py-12 space-y-4">
+                <div className="relative">
+                  <div className="w-16 h-16 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-2xl flex items-center justify-center animate-pulse">
+                    <Sparkles className="w-7 h-7 text-white" />
+                  </div>
+                  <div className="absolute -bottom-1 -right-1 w-6 h-6 bg-white rounded-full border-2 border-indigo-200 flex items-center justify-center">
+                    <Loader2 className="w-3.5 h-3.5 text-indigo-600 animate-spin" />
+                  </div>
+                </div>
+                <div className="text-center space-y-1">
+                  <p className="text-sm font-medium text-gray-900">
+                    Gemini AI is analyzing your results...
+                  </p>
+                  <p className="text-xs text-gray-400">
+                    Generating personalized interpretation and mitigation strategies
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  {[0, 1, 2].map((i) => (
+                    <div
+                      key={i}
+                      className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce"
+                      style={{ animationDelay: `${i * 150}ms` }}
+                    />
+                  ))}
+                </div>
+              </div>
+            ) : interpretationError ? (
+              <div className="bg-red-50 border border-red-200 rounded-2xl p-5 space-y-3">
+                <div className="flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-red-500" />
+                  <span className="text-sm font-medium text-red-800">
+                    Interpretation Unavailable
+                  </span>
+                </div>
+                <p className="text-xs text-red-600 leading-relaxed">{interpretationError}</p>
+                <button
+                  onClick={fetchInterpretation}
+                  className="flex items-center gap-2 px-4 py-2 text-xs font-medium text-red-700 bg-red-100 rounded-full hover:bg-red-200 transition-colors"
+                >
+                  <RefreshCw className="w-3 h-3" />
+                  Try Again
+                </button>
+              </div>
+            ) : aiInterpretation ? (
+              <div className="bg-gradient-to-br from-gray-50 to-indigo-50/30 border border-gray-200 rounded-2xl p-5 sm:p-6">
+                {renderMarkdown(aiInterpretation)}
+              </div>
+            ) : null}
+          </CardContent>
+        </Card>
+
+        {/* ═══════════════════════════════════════════════════════════════
+            FOLLOW-UP CHAT (Gemini)
+           ═══════════════════════════════════════════════════════════════ */}
+        <Card className="animate-fade-in-up stagger-4 border-2 border-indigo-100">
+          <CardHeader className="pb-2">
+            <button
+              onClick={() => setShowChat(!showChat)}
+              className="w-full flex items-center justify-between"
+            >
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl">
+                  <MessageCircle className="w-4 h-4 text-white" />
+                </div>
+                <div className="text-left">
+                  <CardTitle className="text-base flex items-center gap-2">
+                    Ask Follow-up Questions
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[9px] font-semibold bg-gradient-to-r from-indigo-50 to-purple-50 text-indigo-700 rounded-full border border-indigo-200">
+                      <Bot className="w-2.5 h-2.5" />
+                      AI CHAT
+                    </span>
+                  </CardTitle>
+                  <p className="text-[11px] text-gray-400 mt-0.5">
+                    Ask anything about your diagnosis, risk factors, or mitigation strategies
+                  </p>
+                </div>
+              </div>
+              <ChevronDown
+                className={`w-5 h-5 text-gray-400 transition-transform duration-300 ${
+                  showChat ? 'rotate-180' : ''
+                }`}
+              />
+            </button>
+          </CardHeader>
+
+          {showChat && (
+            <CardContent className="pt-2 space-y-4">
+              {/* Quick Questions */}
+              {chatMessages.length === 0 && (
+                <div className="space-y-3">
+                  <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Suggested Questions
+                  </p>
+                  <div className="grid sm:grid-cols-2 gap-2">
+                    {QUICK_QUESTIONS.map((q, i) => (
+                      <button
+                        key={i}
+                        onClick={() => sendChatMessage(q)}
+                        disabled={chatLoading}
+                        className="text-left p-3 bg-white border border-gray-200 rounded-xl text-xs text-gray-600 hover:bg-indigo-50 hover:border-indigo-200 hover:text-indigo-700 transition-all disabled:opacity-50 disabled:hover:bg-white"
+                      >
+                        <span className="flex items-start gap-2">
+                          <MessageCircle className="w-3.5 h-3.5 text-indigo-400 shrink-0 mt-0.5" />
+                          {q}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Chat Messages */}
+              {chatMessages.length > 0 && (
+                <div className="bg-gray-50 border border-gray-200 rounded-2xl overflow-hidden">
+                  <div className="max-h-[500px] overflow-y-auto p-4 space-y-4">
+                    {chatMessages.map((msg, index) => (
+                      <div
+                        key={index}
+                        className={`flex gap-3 ${
+                          msg.role === 'user' ? 'flex-row-reverse' : ''
+                        }`}
+                      >
+                        {/* Avatar */}
+                        <div
+                          className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
+                            msg.role === 'user'
+                              ? 'bg-blue-600'
+                              : 'bg-gradient-to-br from-indigo-500 to-purple-600'
+                          }`}
+                        >
+                          {msg.role === 'user' ? (
+                            <User className="w-4 h-4 text-white" />
+                          ) : (
+                            <Bot className="w-4 h-4 text-white" />
+                          )}
+                        </div>
+                        {/* Message bubble */}
+                        <div
+                          className={`max-w-[85%] rounded-2xl p-3.5 ${
+                            msg.role === 'user'
+                              ? 'bg-blue-600 text-white'
+                              : 'bg-white border border-gray-200'
+                          }`}
+                        >
+                          {msg.role === 'user' ? (
+                            <p className="text-[13px] leading-relaxed">{msg.content}</p>
+                          ) : (
+                            <div>{renderMarkdown(msg.content)}</div>
+                          )}
+                          <p
+                            className={`text-[9px] mt-2 ${
+                              msg.role === 'user'
+                                ? 'text-blue-200'
+                                : 'text-gray-300'
+                            }`}
+                          >
+                            {msg.timestamp.toLocaleTimeString([], {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+
+                    {/* Typing indicator */}
+                    {chatLoading && (
+                      <div className="flex gap-3">
+                        <div className="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shrink-0">
+                          <Bot className="w-4 h-4 text-white" />
+                        </div>
+                        <div className="bg-white border border-gray-200 rounded-2xl p-3.5">
+                          <div className="flex items-center gap-1.5">
+                            {[0, 1, 2].map((i) => (
+                              <div
+                                key={i}
+                                className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce"
+                                style={{ animationDelay: `${i * 150}ms` }}
+                              />
+                            ))}
+                            <span className="text-[10px] text-gray-400 ml-2">
+                              AI is thinking...
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    <div ref={chatEndRef} />
+                  </div>
+                </div>
+              )}
+
+              {/* Chat Input */}
+              <div className="flex items-center gap-2">
+                <div className="flex-1 relative">
+                  <input
+                    ref={chatInputRef}
+                    type="text"
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    onKeyDown={handleChatKeyDown}
+                    placeholder="Ask about your diagnosis, risk factors, or what you can do..."
+                    disabled={chatLoading}
+                    className="w-full pl-4 pr-12 py-3.5 bg-white border border-gray-200 rounded-full text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all disabled:opacity-60"
+                  />
+                </div>
+                <button
+                  onClick={() => sendChatMessage()}
+                  disabled={!chatInput.trim() || chatLoading}
+                  className="w-11 h-11 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-full flex items-center justify-center text-white hover:from-indigo-600 hover:to-purple-700 transition-all disabled:opacity-40 disabled:hover:from-indigo-500 disabled:hover:to-purple-600 shrink-0"
+                >
+                  {chatLoading ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Send className="w-4 h-4" />
+                  )}
+                </button>
+              </div>
+
+              <p className="text-[10px] text-gray-400 text-center">
+                Powered by Google Gemini AI • Responses are for educational purposes only
+              </p>
+            </CardContent>
+          )}
+        </Card>
+
+        {/* Clinical Interpretation (static) */}
+        <Card className="animate-fade-in-up stagger-5">
           <CardHeader className="pb-3">
             <div className="flex items-center gap-3">
               <div className="p-2.5 bg-gray-100 rounded-xl">

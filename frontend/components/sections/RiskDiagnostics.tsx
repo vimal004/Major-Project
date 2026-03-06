@@ -433,8 +433,8 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
     ...shapWaterfallData.map((d) => Math.abs(d.contribution))
   );
   const chartDomain = [
-    -Math.ceil(maxAbsContrib * 10) / 10,
-    Math.ceil(maxAbsContrib * 10) / 10,
+    -Math.ceil(maxAbsContrib * 10) / 10 - 0.2,
+    Math.ceil(maxAbsContrib * 10) / 10 + 0.2,
   ];
 
   // Top risk drivers & protective factors
@@ -544,7 +544,7 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
                     <strong className={riskColorClass}>{riskClassName}</strong> for Type-2
                     Diabetes. Base population risk is{' '}
                     <strong className="text-gray-700">
-                      {(baseValue * 100).toFixed(0)}%
+                      {((assessmentData.shap_data?.base_probability ?? 0.2) * 100).toFixed(1)}%
                     </strong>
                     .
                   </p>
@@ -587,7 +587,7 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
                       <span>{feature.name}</span>
                     </span>
                     <span className="font-semibold text-red-600">
-                      +{(feature.contribution * 100).toFixed(1)}%
+                      {feature.contribution.toFixed(2)}
                     </span>
                   </div>
                   <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
@@ -650,15 +650,16 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
             {/* Interpretation Guide */}
             <div className="bg-gray-50 border border-gray-200 rounded-2xl p-4">
               <p className="text-xs text-gray-600 leading-relaxed">
-                <strong className="text-gray-900">How to interpret:</strong> Each bar shows
+                <strong className="text-gray-900">How to interpret:</strong> Each bar represents a{' '}
+                <strong className="text-gray-900">Logit Impact Score</strong>. It shows
                 how a specific feature pushes the risk prediction{' '}
                 <span className="text-red-600 font-semibold">↑ up (risk-increasing)</span> or{' '}
                 <span className="text-blue-600 font-semibold">↓ down (protective)</span> from
                 the baseline population risk of{' '}
                 <strong className="text-gray-900">
-                  {(baseValue * 100).toFixed(0)}%
+                  {((assessmentData.shap_data?.base_probability ?? 0.2) * 100).toFixed(1)}%
                 </strong>
-                . Longer bars = stronger influence.
+                . These scores sum up in log-odds space to produce the final probability.
               </p>
             </div>
 
@@ -678,7 +679,7 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
                       tick={{ fontSize: 10, fill: '#9ca3af' }}
                       axisLine={{ stroke: '#e5e7eb' }}
                       tickFormatter={(value: number) =>
-                        `${value > 0 ? '+' : ''}${(value * 100).toFixed(0)}%`
+                        `${value > 0 ? '+' : ''}${value.toFixed(1)}`
                       }
                     />
                     <YAxis
@@ -692,8 +693,8 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
                     <ReferenceLine x={0} stroke="#9ca3af" strokeDasharray="4 4" />
                     <Tooltip
                       formatter={(value: any) => [
-                        `${value > 0 ? '+' : ''}${(value * 100).toFixed(1)}% impact`,
-                        'SHAP Contribution',
+                        `${value > 1.0 ? 'High' : value > 0 ? 'Medium' : 'Protective'} Impact (${value.toFixed(2)})`,
+                        'Logit Impact Score',
                       ]}
                       contentStyle={{
                         backgroundColor: '#ffffff',
@@ -748,7 +749,7 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
                       >
                         <span className="text-gray-700 font-medium">{feature.name}</span>
                         <span className="font-semibold text-red-600">
-                          +{(feature.contribution * 100).toFixed(1)}%
+                          {feature.contribution.toFixed(2)}
                         </span>
                       </div>
                     ))
@@ -773,7 +774,7 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
                       >
                         <span className="text-gray-700 font-medium">{feature.name}</span>
                         <span className="font-semibold text-blue-600">
-                          {(feature.contribution * 100).toFixed(1)}%
+                          {feature.contribution.toFixed(2)}
                         </span>
                       </div>
                     ))

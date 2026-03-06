@@ -9,6 +9,7 @@ Integrates Google Gemini (via REST API) for natural-language interpretation.
 from __future__ import annotations
 
 import os
+import math
 import asyncio
 import logging
 from contextlib import asynccontextmanager
@@ -279,6 +280,7 @@ async def predict(patient: PatientData):
             "risk_level": risk_level,
             "shap_data": {
                 "base_value": round(base_value, 4),
+                "base_probability": round(_sigmoid(base_value), 4),
                 "features": shap_features,
             },
         }
@@ -289,17 +291,34 @@ async def predict(patient: PatientData):
 
 
 # ---------------------------------------------------------------------------
+# Helper: Sigmoid transformation (Log-Odds to Probability)
+# ---------------------------------------------------------------------------
+def _sigmoid(x: float) -> float:
+    """Convert log-odds (logit) to probability [0, 1]."""
+    try:
+        return 1 / (1 + math.exp(-x))
+    except OverflowError:
+        return 1.0 if x > 0 else 0.0
+
+
+# ---------------------------------------------------------------------------
 # Helper: build a rich context string for Gemini from SHAP data
 # ---------------------------------------------------------------------------
 def _build_shap_context(req: InterpretRequest | ChatRequest) -> str:
+    """Create a detailed text representation of the SHAP analysis for Gemini."""
+    # Convert log-odds baseline to probability
+    base_prob = _sigmoid(req.base_value)
+    
     lines = [
-        "PATIENT DIABETES RISK ASSESSMENT RESULTS",
-        "=========================================",
-        f"Overall Risk Probability: {req.risk_probability * 100:.1f}%",
+        "PATIENT DIABETES RISK ASSESSMENT RESULTS (TECHNICAL LOG-ODDS SPACE)",
+        "===================================================================",
+        f"Overall Predicted Probability: {req.risk_probability * 100:.1f}%",
         f"Risk Level: {req.risk_level}",
-        f"Baseline Population Risk: {req.base_value * 100:.1f}%",
+        f"Baseline Model Expected Value (Log-Odds): {req.base_value:.4f}",
+        f"Baseline Population Risk (Sigmoid): {base_prob * 100:.1f}%",
         "",
-        "TOP SHAP FEATURE CONTRIBUTIONS (ranked by impact):",
+        "CRITICAL FEATURE IMPACTS (SHAP LOGIT VALUES):",
+        "Note: These are 'Impact Scores' in log-odds. Values > 0 increase risk.",
         "---------------------------------------------------",
     ]
 
@@ -307,12 +326,12 @@ def _build_shap_context(req: InterpretRequest | ChatRequest) -> str:
         name = feat.get("name", "Unknown")
         value = feat.get("value", "N/A")
         contribution = feat.get("contribution", 0)
-        direction = "INCREASES risk" if contribution > 0 else "DECREASES risk (protective)"
+        direction = "INCREASES risk ↑" if contribution > 0 else "DECREASES risk ↓ (protective)"
         friendly_name = FEATURE_DESCRIPTIONS.get(name, name)
         lines.append(
             f"  {i}. {friendly_name} ({name})"
             f"\n     Patient value: {value}"
-            f"\n     SHAP contribution: {contribution:+.4f} ({contribution * 100:+.1f}%)"
+            f"\n     SHAP Impact Score (Log-Odds): {contribution:+.4f}"
             f"\n     Effect: {direction}"
         )
 
@@ -491,6 +510,9 @@ def _generate_local_fallback(req: InterpretRequest) -> str:
     Generate a high-quality clinical interpretation locally using SHAP data.
     Ensures the demo works even if Gemini is down.
     """
+    # Convert baseline log-odds to probability
+    base_prob = _sigmoid(req.base_value)
+
     # Identify key drivers (positive SHAP) and protectors (negative SHAP)
     drivers = [f for f in req.features if f['contribution'] > 0]
     protectors = [f for f in req.features if f['contribution'] < 0]
@@ -499,19 +521,19 @@ def _generate_local_fallback(req: InterpretRequest) -> str:
     drivers.sort(key=lambda x: x['contribution'], reverse=True)
     protectors.sort(key=lambda x: x['contribution']) # most negative first
 
-    markdown = f"""## 📊 Risk Assessment Summary (Local Clinical Model)
+    markdown = f"""## 📊 Risk Assessment Summary (XAI Clinical Model)
 **Current Status:** {req.risk_level}
 **Calculated Probability:** {req.risk_probability * 100:.1f}%
-**Baseline population risk:** {req.base_value * 100:.1f}%
+**Baseline population risk:** {base_prob * 100:.1f}%
 
-The integrated XAI-CDSS engine has identified a **{req.risk_level.lower()}** profile. This assessment is based on {len(req.features)} clinical markers analyzed via Shapley Additive Explanations.
+The integrated XAI-CDSS engine has identified a **{req.risk_level.lower()}** profile. This assessment is based on {len(req.features)} clinical markers analyzed via Log-Odds impact scoring.
 
 ## 🔍 Understanding the Key Factors
 """
     for feat in req.features[:5]:
         name = FEATURE_DESCRIPTIONS.get(feat['name'], feat['name'])
         impact = "increasing" if feat['contribution'] > 0 else "reducing"
-        markdown += f"- **{name}:** Currently at **{feat['value']}**, this factor is actively **{impact}** your calculated risk.\n"
+        markdown += f"- **{name}:** Currently at **{feat['value']}**, this factor has an Impact Score of **{feat['contribution']:+.2f}**, actively **{impact}** your risk.\n"
 
     if drivers:
         markdown += "\n## ⚠️ Primary Risk Drivers\n"

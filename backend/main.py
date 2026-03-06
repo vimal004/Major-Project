@@ -260,14 +260,31 @@ async def predict(patient: PatientData):
                 shap_values = state.xgb_explainer.shap_values(scaled_input)
                 base_value = float(state.xgb_explainer.expected_value)
                 contributions = shap_values[0]
+
+                # Build paired list with raw SHAP values
                 paired = [
                     {
                         "name": FEATURE_NAMES[i],
                         "value": float(raw_values[i]),
-                        "contribution": float(contributions[i]),
+                        "raw_shap": float(contributions[i]),
                     }
                     for i in range(len(FEATURE_NAMES))
                 ]
+
+                # Compute relative influence: each feature's |SHAP| / total |SHAP| * 100
+                total_abs_shap = sum(abs(p["raw_shap"]) for p in paired)
+                if total_abs_shap > 0:
+                    for p in paired:
+                        influence_pct = (abs(p["raw_shap"]) / total_abs_shap) * 100
+                        p["contribution"] = round(influence_pct if p["raw_shap"] > 0 else -influence_pct, 2)
+                        p["influence_pct"] = round(influence_pct, 2)
+                        p["direction"] = "risk" if p["raw_shap"] > 0 else "protective"
+                else:
+                    for p in paired:
+                        p["contribution"] = 0.0
+                        p["influence_pct"] = 0.0
+                        p["direction"] = "neutral"
+
                 paired.sort(key=lambda x: abs(x["contribution"]), reverse=True)
                 shap_features = paired[:7]
             except Exception as shap_exc:
@@ -280,7 +297,6 @@ async def predict(patient: PatientData):
             "risk_level": risk_level,
             "shap_data": {
                 "base_value": round(base_value, 4),
-                "base_probability": round(_sigmoid(base_value), 4),
                 "features": shap_features,
             },
         }
@@ -306,33 +322,30 @@ def _sigmoid(x: float) -> float:
 # ---------------------------------------------------------------------------
 def _build_shap_context(req: InterpretRequest | ChatRequest) -> str:
     """Create a detailed text representation of the SHAP analysis for Gemini."""
-    # Convert log-odds baseline to probability
-    base_prob = _sigmoid(req.base_value)
-    
     lines = [
-        "PATIENT DIABETES RISK ASSESSMENT RESULTS (TECHNICAL LOG-ODDS SPACE)",
-        "===================================================================",
+        "PATIENT DIABETES RISK ASSESSMENT RESULTS",
+        "=========================================",
         f"Overall Predicted Probability: {req.risk_probability * 100:.1f}%",
         f"Risk Level: {req.risk_level}",
-        f"Baseline Model Expected Value (Log-Odds): {req.base_value:.4f}",
-        f"Baseline Population Risk (Sigmoid): {base_prob * 100:.1f}%",
         "",
-        "CRITICAL FEATURE IMPACTS (SHAP LOGIT VALUES):",
-        "Note: These are 'Impact Scores' in log-odds. Values > 0 increase risk.",
+        "FEATURE INFLUENCE ON THIS PREDICTION (Relative % of model decision):",
+        "Each feature's influence is shown as a % of the total model decision.",
+        "Positive = increases diabetes risk. Negative = protective (lowers risk).",
         "---------------------------------------------------",
     ]
 
     for i, feat in enumerate(req.features, 1):
         name = feat.get("name", "Unknown")
         value = feat.get("value", "N/A")
-        contribution = feat.get("contribution", 0)
-        direction = "INCREASES risk ↑" if contribution > 0 else "DECREASES risk ↓ (protective)"
+        influence_pct = feat.get("influence_pct", abs(feat.get("contribution", 0)))
+        direction = feat.get("direction", "risk" if feat.get("contribution", 0) > 0 else "protective")
         friendly_name = FEATURE_DESCRIPTIONS.get(name, name)
+        dir_label = "INCREASES risk" if direction == "risk" else "DECREASES risk (protective)"
         lines.append(
             f"  {i}. {friendly_name} ({name})"
             f"\n     Patient value: {value}"
-            f"\n     SHAP Impact Score (Log-Odds): {contribution:+.4f}"
-            f"\n     Effect: {direction}"
+            f"\n     Influence: {influence_pct:.1f}% of the model's decision"
+            f"\n     Effect: {dir_label}"
         )
 
     if req.patient_payload:

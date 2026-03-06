@@ -382,7 +382,7 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
   const riskProbability: number = assessmentData.risk_probability ?? 0;
   const riskLevel: string = assessmentData.risk_level ?? 'Unknown';
   const baseValue: number = assessmentData.shap_data?.base_value ?? 0.5;
-  const shapFeatures: { name: string; value: number; contribution: number }[] =
+  const shapFeatures: { name: string; value: number; contribution: number; influence_pct?: number; direction?: string }[] =
     assessmentData.shap_data?.features ?? [];
 
   // -------------------------------------------------------------------
@@ -413,13 +413,16 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
 
   const riskStyle = getRiskStyle(riskProbability);
 
+  // SHAP data: use influence_pct (always positive, 0-100 scale)
+  // contribution is signed (positive=risk, negative=protective)
   const shapWaterfallData = [...shapFeatures]
     .sort((a, b) => Math.abs(b.contribution) - Math.abs(a.contribution))
     .map((feature) => ({
       name: feature.name,
-      contribution: feature.contribution,
-      absContribution: Math.abs(feature.contribution),
-      label: `${feature.contribution > 0 ? '+' : ''}${(feature.contribution * 100).toFixed(1)}%`,
+      contribution: feature.contribution,  // signed: +risk, -protective
+      influence: feature.influence_pct ?? Math.abs(feature.contribution),  // unsigned 0-100
+      direction: feature.direction ?? (feature.contribution > 0 ? 'risk' : 'protective'),
+      label: `${(feature.influence_pct ?? Math.abs(feature.contribution)).toFixed(1)}%`,
     }));
 
   const gaugeData = [
@@ -427,15 +430,12 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
     { name: 'Safe', value: animateGauge ? (1 - riskProbability) * 100 : 100 },
   ];
 
-  // Compute dynamic domain for SHAP chart
-  const maxAbsContrib = Math.max(
-    0.05,
-    ...shapWaterfallData.map((d) => Math.abs(d.contribution))
+  // Chart domain: 0-100% scale for influence
+  const maxInfluence = Math.max(
+    10,
+    ...shapWaterfallData.map((d) => d.influence)
   );
-  const chartDomain = [
-    -Math.ceil(maxAbsContrib * 10) / 10 - 0.2,
-    Math.ceil(maxAbsContrib * 10) / 10 + 0.2,
-  ];
+  const chartDomain = [0, Math.ceil(maxInfluence / 10) * 10 + 5];
 
   // Top risk drivers & protective factors
   const riskDrivers = shapFeatures
@@ -542,11 +542,11 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
                   <p className="text-xs text-gray-500 leading-relaxed">
                     The ensemble consensus indicates{' '}
                     <strong className={riskColorClass}>{riskClassName}</strong> for Type-2
-                    Diabetes. Base population risk is{' '}
+                    Diabetes. The model analyzed 21 clinical features and predicts a{' '}
                     <strong className="text-gray-700">
-                      {((assessmentData.shap_data?.base_probability ?? 0.2) * 100).toFixed(1)}%
-                    </strong>
-                    .
+                      {(riskProbability * 100).toFixed(1)}%
+                    </strong>{' '}
+                    probability of diabetes.
                   </p>
                   {/* Risk Scale */}
                   <div className="space-y-1.5">
@@ -587,7 +587,7 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
                       <span>{feature.name}</span>
                     </span>
                     <span className="font-semibold text-red-600">
-                      {feature.contribution.toFixed(2)}
+                      {(feature.influence_pct ?? Math.abs(feature.contribution)).toFixed(1)}%
                     </span>
                   </div>
                   <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
@@ -596,7 +596,7 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
                       style={{
                         width: animateGauge
                           ? `${Math.min(
-                              (Math.abs(feature.contribution) / maxAbsContrib) * 100,
+                              feature.influence_pct ?? Math.abs(feature.contribution),
                               100
                             )}%`
                           : '0%',
@@ -621,7 +621,7 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
           </Card>
         </div>
 
-        {/* SHAP Waterfall Analysis */}
+        {/* Feature Influence Analysis */}
         <Card className="animate-fade-in-up stagger-2">
           <CardHeader className="pb-3">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
@@ -631,10 +631,10 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
                 </div>
                 <div>
                   <CardTitle className="text-base">
-                    SHAP Waterfall Analysis
+                    Feature Influence Analysis
                   </CardTitle>
                   <p className="text-[11px] text-gray-400 mt-0.5">
-                    Local Interpretability — Feature-level contribution to prediction
+                    How much each factor influenced the AI&apos;s decision for this patient
                   </p>
                 </div>
               </div>
@@ -650,16 +650,13 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
             {/* Interpretation Guide */}
             <div className="bg-gray-50 border border-gray-200 rounded-2xl p-4">
               <p className="text-xs text-gray-600 leading-relaxed">
-                <strong className="text-gray-900">How to interpret:</strong> Each bar represents a{' '}
-                <strong className="text-gray-900">Logit Impact Score</strong>. It shows
-                how a specific feature pushes the risk prediction{' '}
-                <span className="text-red-600 font-semibold">↑ up (risk-increasing)</span> or{' '}
-                <span className="text-blue-600 font-semibold">↓ down (protective)</span> from
-                the baseline population risk of{' '}
-                <strong className="text-gray-900">
-                  {((assessmentData.shap_data?.base_probability ?? 0.2) * 100).toFixed(1)}%
-                </strong>
-                . These scores sum up in log-odds space to produce the final probability.
+                <strong className="text-gray-900">How to read this chart:</strong> Each bar
+                shows what percentage of the AI&apos;s decision was influenced by that factor.
+                Bars in{' '}
+                <span className="text-red-600 font-semibold">red = risk-increasing</span>{' '}and{' '}
+                <span className="text-blue-600 font-semibold">blue = protective</span>.
+                Longer bars mean the factor had a bigger role in the prediction.
+                All influences add up to 100% of the model&apos;s reasoning.
               </p>
             </div>
 
@@ -678,9 +675,8 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
                       domain={chartDomain}
                       tick={{ fontSize: 10, fill: '#9ca3af' }}
                       axisLine={{ stroke: '#e5e7eb' }}
-                      tickFormatter={(value: number) =>
-                        `${value > 0 ? '+' : ''}${value.toFixed(1)}`
-                      }
+                      tickFormatter={(value: number) => `${value.toFixed(0)}%`}
+                      label={{ value: '% Influence on Decision', position: 'insideBottom', offset: -5, fontSize: 10, fill: '#9ca3af' }}
                     />
                     <YAxis
                       type="category"
@@ -690,12 +686,15 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
                       axisLine={false}
                       tickLine={false}
                     />
-                    <ReferenceLine x={0} stroke="#9ca3af" strokeDasharray="4 4" />
                     <Tooltip
-                      formatter={(value: any) => [
-                        `${value > 1.0 ? 'High' : value > 0 ? 'Medium' : 'Protective'} Impact (${value.toFixed(2)})`,
-                        'Logit Impact Score',
-                      ]}
+                      formatter={(value: any, name: any, props: any) => {
+                        const entry = props?.payload;
+                        const dir = entry?.direction === 'risk' ? 'Risk-Increasing' : 'Protective';
+                        return [
+                          `${Math.abs(Number(value)).toFixed(1)}% of the model's decision (${dir})`,
+                          'Feature Influence',
+                        ];
+                      }}
                       contentStyle={{
                         backgroundColor: '#ffffff',
                         border: '1px solid #e5e7eb',
@@ -707,7 +706,7 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
                       labelStyle={{ fontWeight: 600, color: '#111827' }}
                     />
                     <Bar
-                      dataKey="contribution"
+                      dataKey="influence"
                       radius={[0, 6, 6, 0]}
                       animationDuration={1200}
                       animationBegin={600}
@@ -715,7 +714,7 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
                       {shapWaterfallData.map((entry, index) => (
                         <Cell
                           key={`cell-${index}`}
-                          fill={entry.contribution > 0 ? '#dc2626' : '#1a73e8'}
+                          fill={entry.direction === 'risk' ? '#dc2626' : '#1a73e8'}
                           fillOpacity={0.85}
                         />
                       ))}
@@ -749,7 +748,7 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
                       >
                         <span className="text-gray-700 font-medium">{feature.name}</span>
                         <span className="font-semibold text-red-600">
-                          {feature.contribution.toFixed(2)}
+                          {(feature.influence_pct ?? Math.abs(feature.contribution)).toFixed(1)}% influence
                         </span>
                       </div>
                     ))
@@ -774,7 +773,7 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
                       >
                         <span className="text-gray-700 font-medium">{feature.name}</span>
                         <span className="font-semibold text-blue-600">
-                          {feature.contribution.toFixed(2)}
+                          {(feature.influence_pct ?? Math.abs(feature.contribution)).toFixed(1)}% influence
                         </span>
                       </div>
                     ))
@@ -1097,7 +1096,7 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
                         {feature.name} ({feature.value})
                       </div>
                       <div className="text-[10px] font-semibold text-red-600 mt-0.5">
-                        +{(feature.contribution * 100).toFixed(1)}% impact
+                        {(feature.influence_pct ?? Math.abs(feature.contribution)).toFixed(1)}% influence
                       </div>
                     </div>
                   ))}
@@ -1121,7 +1120,7 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
                     .slice(0, 3)
                     .map(
                       (f) =>
-                        `${f.name} (${(f.contribution * 100).toFixed(1)}% impact)`
+                        `${f.name} (${(f.influence_pct ?? Math.abs(f.contribution)).toFixed(1)}% influence)`
                     )
                     .join(', ')}
                   . These factors actively mitigate risk and should be maintained and

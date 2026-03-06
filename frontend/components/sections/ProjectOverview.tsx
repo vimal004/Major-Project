@@ -50,7 +50,7 @@ export default function ProjectOverview() {
   ];
 
   const diseases = [
-    { name: 'Type-2 Diabetes', status: 'active', accuracy: '87.3%', auc: '0.85' },
+    { name: 'Type-2 Diabetes', status: 'active', accuracy: '75.1%', auc: '0.83' },
     { name: 'Cardiovascular Disease', status: 'planned', accuracy: '—', auc: '—' },
     { name: 'Hypertension', status: 'planned', accuracy: '—', auc: '—' },
     { name: 'Chronic Kidney Disease', status: 'planned', accuracy: '—', auc: '—' },

@@ -49,11 +49,11 @@ The framework has been rigorously evaluated on a 20% holdout test set with the f
 
 | Metric | Score | Description |
 | :--- | :--- | :--- |
-| **Accuracy** | **87.3%** | Overall correct predictions |
-| **AUC-ROC** | **0.85** | Threshold-independent discriminative power |
-| **Precision** | **0.82** | Positive predictive value (Minimizing False Positives) |
-| **Recall** | **0.84** | Sensitivity (Minimizing False Negatives) |
-| **F1-Score** | **0.83** | Harmonic mean of Precision and Recall |
+| **Accuracy** | **75.1%** | Overall correct predictions |
+| **AUC-ROC** | **0.83** | Threshold-independent discriminative power |
+| **Precision** | **0.75** | Positive predictive value (Weighted Average) |
+| **Recall** | **0.75** | Sensitivity (Weighted Average) |
+| **F1-Score** | **0.75** | Harmonic mean of Precision and Recall |
 
 ---
 
@@ -108,6 +108,7 @@ While the framework currently excels at **Type-2 Diabetes** assessment, our deve
 - [ ] Chronic Kidney Disease (CKD) Module (Planned)
 - [ ] Stroke Risk Assessment (Planned)
 - [ ] Real-time patient recommendation engine based on SHAP insights.
+- [ ] Improving model performance to **85%+ accuracy** for the final review.
 
 ---
 

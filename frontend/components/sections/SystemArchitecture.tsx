@@ -95,8 +95,8 @@ export default function SystemArchitecture() {
       steps: [
         'Implemented Soft Voting Classifier ensemble strategy',
         'Weighted average of class probability predictions',
-        'Achieved 87.3% accuracy with 0.85 AUC-ROC score',
-        'Balanced precision (0.82) and recall (0.84)',
+        'Achieved 75.1% accuracy with 0.83 AUC-ROC score',
+        'Balanced precision (0.75) and recall (0.75)',
       ],
       number: '04',
     },
@@ -149,11 +149,11 @@ export default function SystemArchitecture() {
   ];
 
   const performanceMetrics = [
-    { label: 'Accuracy', value: '87.3%', desc: 'Overall' },
-    { label: 'AUC-ROC', value: '0.85', desc: 'Threshold-independent' },
-    { label: 'Precision', value: '0.82', desc: 'Positive predictive' },
-    { label: 'Recall', value: '0.84', desc: 'Sensitivity' },
-    { label: 'F1-Score', value: '0.83', desc: 'Harmonic mean' },
+    { label: 'Accuracy', value: '75.1%', desc: 'Overall' },
+    { label: 'AUC-ROC', value: '0.83', desc: 'Threshold-independent' },
+    { label: 'Precision', value: '0.75', desc: 'Positive predictive' },
+    { label: 'Recall', value: '0.75', desc: 'Sensitivity' },
+    { label: 'F1-Score', value: '0.75', desc: 'Harmonic mean' },
     { label: 'Latency', value: '~850ms', desc: 'End-to-end' },
   ];
 

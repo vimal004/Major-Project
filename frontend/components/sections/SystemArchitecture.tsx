@@ -38,8 +38,8 @@ export default function SystemArchitecture() {
     {
       name: 'ML Inference Engine',
       icon: Cpu,
-      components: ['Scikit-learn', 'XGBoost', 'Ensemble Voting', 'Model Versioning'],
-      description: 'Soft voting consensus across three optimized classifiers',
+      components: ['Scikit-learn', 'XGBoost', 'Ensemble Voting', 'Parallel Pipelines'],
+      description: 'Soft voting consensus across three optimized classifiers per disease',
     },
     {
       name: 'XAI Engine',
@@ -82,7 +82,7 @@ export default function SystemArchitecture() {
       title: 'Model Training & Tuning',
       icon: Cpu,
       steps: [
-        'Trained 3 base models with stratified 5-fold cross-validation',
+        'Trained 3 base models per disease with stratified 5-fold CV',
         'Logistic Regression: L2 regularization, C=1.0',
         'Random Forest: 200 trees, max_depth=15, min_samples_split=5',
         'XGBoost: learning_rate=0.1, n_estimators=150, max_depth=6',
@@ -90,13 +90,13 @@ export default function SystemArchitecture() {
       number: '03',
     },
     {
-      title: 'Ensemble Architecture',
+      title: 'Parallel Ensemble Architecture',
       icon: Layers,
       steps: [
         'Implemented Soft Voting Classifier ensemble strategy',
         'Weighted average of class probability predictions',
-        'Achieved 75.1% accuracy with 0.83 AUC-ROC score',
-        'Balanced precision (0.75) and recall (0.75)',
+        'Simultaneous parallel execution across 3 disease pipelines',
+        'Achieved >75% average accuracy across all target NCDs',
       ],
       number: '04',
     },

@@ -9,3 +9,5 @@ numpy
 joblib
 gunicorn
 httpx
+google-generativeai
+python-dotenv

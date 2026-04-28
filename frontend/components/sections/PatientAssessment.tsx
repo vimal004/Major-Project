@@ -9,6 +9,7 @@ import {
   Loader2,
   ShieldCheck,
   Info,
+  Brain,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -29,7 +30,9 @@ interface PatientAssessmentProps {
   onComplete: (data: any) => void;
 }
 
-const API_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000/api/predict';
+const API_URL =
+  (process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000') +
+  '/api/predict/all';
 
 export default function PatientAssessment({ onComplete }: PatientAssessmentProps) {
   const [loading, setLoading] = useState(false);
@@ -50,6 +53,7 @@ export default function PatientAssessment({ onComplete }: PatientAssessmentProps
     smoker: false,
     stroke: false,
     heartDisease: false,
+    diabetes: false,
     physActivity: true,
     fruits: true,
     veggies: true,
@@ -59,13 +63,7 @@ export default function PatientAssessment({ onComplete }: PatientAssessmentProps
     noDocbcCost: false,
   });
 
-  /**
-   * Convert form state → the 21-field payload expected by the FastAPI backend
-   * in the exact order: HighBP, HighChol, CholCheck, BMI, Smoker, Stroke,
-   * HeartDiseaseorAttack, PhysActivity, Fruits, Veggies, HvyAlcoholConsump,
-   * AnyHealthcare, NoDocbcCost, GenHlth, MentHlth, PhysHlth, DiffWalk,
-   * Sex, Age, Education, Income
-   */
+  // Build the full 22-feature payload required by /api/predict/all
   const buildPayload = () => ({
     HighBP: formData.highBP ? 1.0 : 0.0,
     HighChol: formData.highChol ? 1.0 : 0.0,
@@ -74,6 +72,7 @@ export default function PatientAssessment({ onComplete }: PatientAssessmentProps
     Smoker: formData.smoker ? 1.0 : 0.0,
     Stroke: formData.stroke ? 1.0 : 0.0,
     HeartDiseaseorAttack: formData.heartDisease ? 1.0 : 0.0,
+    Diabetes: formData.diabetes ? 1.0 : 0.0,
     PhysActivity: formData.physActivity ? 1.0 : 0.0,
     Fruits: formData.fruits ? 1.0 : 0.0,
     Veggies: formData.veggies ? 1.0 : 0.0,
@@ -94,40 +93,31 @@ export default function PatientAssessment({ onComplete }: PatientAssessmentProps
     e.preventDefault();
     setLoading(true);
     setError(null);
-
     const payload = buildPayload();
-
     try {
       const response = await fetch(API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
-
       if (!response.ok) {
         const errBody = await response.json().catch(() => ({}));
         throw new Error(errBody.detail || `Server responded with ${response.status}`);
       }
-
       const result = await response.json();
-
-      // Pass the API response + patient metadata upstream
-      onComplete({
-        patientId: formData.patientId,
-        payload,
-        ...result,
-      });
+      onComplete({ patientId: formData.patientId, payload, ...result });
     } catch (err: any) {
-      console.error('Prediction request failed:', err);
-      setError(err.message || 'Failed to reach the prediction server. Make sure the backend is running on port 8000.');
+      setError(
+        err.message ||
+          'Failed to reach the prediction server. Make sure the backend is running on port 8000.'
+      );
     } finally {
       setLoading(false);
     }
   };
 
-  const updateField = (field: string, value: any) => {
+  const updateField = (field: string, value: any) =>
     setFormData((prev) => ({ ...prev, [field]: value }));
-  };
 
   const ageCategories = [
     { value: '1', label: '18–24 years' },
@@ -174,103 +164,61 @@ export default function PatientAssessment({ onComplete }: PatientAssessmentProps
   ];
 
   const clinicalToggles = [
-    {
-      id: 'highBP',
-      label: 'High Blood Pressure',
-      description: 'Clinician-diagnosed hypertension',
-      checked: formData.highBP,
-    },
-    {
-      id: 'highChol',
-      label: 'High Cholesterol',
-      description: 'Diagnosed high LDL cholesterol',
-      checked: formData.highChol,
-    },
-    {
-      id: 'cholCheck',
-      label: 'Cholesterol Check',
-      description: 'Within the past 5 years',
-      checked: formData.cholCheck,
-    },
+    { id: 'highBP', label: 'High Blood Pressure', description: 'Clinician-diagnosed hypertension', checked: formData.highBP },
+    { id: 'highChol', label: 'High Cholesterol', description: 'Diagnosed high LDL cholesterol', checked: formData.highChol },
+    { id: 'cholCheck', label: 'Cholesterol Check', description: 'Within the past 5 years', checked: formData.cholCheck },
+  ];
+
+  const historyToggles = [
+    { id: 'stroke', label: 'Stroke History', description: 'Ever told you had a stroke', checked: formData.stroke },
+    { id: 'heartDisease', label: 'Heart Disease / Attack', description: 'CHD or Myocardial Infarction history', checked: formData.heartDisease },
+    { id: 'diabetes', label: 'Diabetes History', description: 'Diagnosed or pre-diabetic condition', checked: formData.diabetes },
   ];
 
   const lifestyleToggles = [
-    {
-      id: 'smoker',
-      label: 'Smoker',
-      description: 'Smoked ≥100 cigarettes in lifetime',
-      checked: formData.smoker,
-    },
-    {
-      id: 'stroke',
-      label: 'Stroke History',
-      description: 'Ever told you had a stroke',
-      checked: formData.stroke,
-    },
-    {
-      id: 'heartDisease',
-      label: 'Heart Disease / Attack',
-      description: 'CHD or Myocardial Infarction history',
-      checked: formData.heartDisease,
-    },
-    {
-      id: 'physActivity',
-      label: 'Physical Activity',
-      description: 'Exercise in past 30 days (non-work)',
-      checked: formData.physActivity,
-    },
-    {
-      id: 'fruits',
-      label: 'Fruit Consumption',
-      description: '1+ fruit servings per day',
-      checked: formData.fruits,
-    },
-    {
-      id: 'veggies',
-      label: 'Vegetable Consumption',
-      description: '1+ vegetable servings per day',
-      checked: formData.veggies,
-    },
-    {
-      id: 'hvyAlcohol',
-      label: 'Heavy Alcohol Consumption',
-      description: 'Men: ≥14/wk, Women: ≥7/wk',
-      checked: formData.hvyAlcohol,
-    },
-    {
-      id: 'diffWalk',
-      label: 'Difficulty Walking',
-      description: 'Serious difficulty walking or climbing stairs',
-      checked: formData.diffWalk,
-    },
+    { id: 'smoker', label: 'Smoker', description: 'Smoked ≥100 cigarettes in lifetime', checked: formData.smoker },
+    { id: 'physActivity', label: 'Physical Activity', description: 'Exercise in past 30 days (non-work)', checked: formData.physActivity },
+    { id: 'fruits', label: 'Fruit Consumption', description: '1+ fruit servings per day', checked: formData.fruits },
+    { id: 'veggies', label: 'Vegetable Consumption', description: '1+ vegetable servings per day', checked: formData.veggies },
+    { id: 'hvyAlcohol', label: 'Heavy Alcohol Consumption', description: 'Men: ≥14/wk, Women: ≥7/wk', checked: formData.hvyAlcohol },
+    { id: 'diffWalk', label: 'Difficulty Walking', description: 'Serious difficulty walking or climbing stairs', checked: formData.diffWalk },
   ];
 
-  /* ---- NEW: Healthcare Access toggles (covers the 2 missing features) ---- */
   const healthcareToggles = [
-    {
-      id: 'anyHealthcare',
-      label: 'Healthcare Coverage',
-      description: 'Has any form of healthcare coverage / insurance',
-      checked: formData.anyHealthcare,
-    },
-    {
-      id: 'noDocbcCost',
-      label: 'Skipped Doctor Due to Cost',
-      description: 'Could not see a doctor in past 12 months due to cost',
-      checked: formData.noDocbcCost,
-    },
+    { id: 'anyHealthcare', label: 'Healthcare Coverage', description: 'Has any form of healthcare coverage / insurance', checked: formData.anyHealthcare },
+    { id: 'noDocbcCost', label: 'Skipped Doctor Due to Cost', description: 'Could not see a doctor in past 12 months due to cost', checked: formData.noDocbcCost },
   ];
 
   const completedFields = [
-    formData.age,
-    formData.sex,
-    formData.education,
-    formData.income,
-    formData.bmi,
-    formData.genHealth,
+    formData.age, formData.sex, formData.education, formData.income, formData.bmi, formData.genHealth,
   ].filter(Boolean).length;
   const totalRequired = 6;
   const progress = Math.round((completedFields / totalRequired) * 100);
+
+  const ToggleGrid = ({ items, cols = 2 }: { items: typeof clinicalToggles; cols?: number }) => (
+    <div className={`grid sm:grid-cols-${cols} gap-3`}>
+      {items.map((toggle) => (
+        <div
+          key={toggle.id}
+          className={`flex items-center justify-between p-3.5 rounded-xl border transition-all ${
+            toggle.checked ? 'bg-blue-50/50 border-blue-200' : 'bg-gray-50 border-gray-200 hover:border-gray-300'
+          }`}
+        >
+          <div className="space-y-0.5 mr-3">
+            <Label htmlFor={toggle.id} className="text-xs font-medium text-gray-700 cursor-pointer">
+              {toggle.label}
+            </Label>
+            <p className="text-[10px] text-gray-400 leading-tight">{toggle.description}</p>
+          </div>
+          <Switch
+            id={toggle.id}
+            checked={toggle.checked}
+            onCheckedChange={(checked) => updateField(toggle.id, checked)}
+          />
+        </div>
+      ))}
+    </div>
+  );
 
   return (
     <div className="min-h-screen bg-[#f8f9fa]">
@@ -279,16 +227,16 @@ export default function PatientAssessment({ onComplete }: PatientAssessmentProps
         <div className="space-y-4 animate-fade-in-up">
           <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:justify-between">
             <div>
-              <h1 className="text-2xl font-semibold text-gray-900">
-                Patient Risk Assessment
-              </h1>
+              <h1 className="text-2xl font-semibold text-gray-900">Patient Risk Assessment</h1>
               <p className="text-sm text-gray-500 mt-1">
-                BRFSS 2015 clinical &amp; lifestyle indicators • Type-2 Diabetes Module
+                BRFSS 2015 clinical &amp; lifestyle indicators • Multi-Disease Fusion Module
               </p>
             </div>
-            <Badge variant="outline" className="self-start sm:self-auto text-[10px] font-semibold tracking-wider text-blue-600 border-blue-200 bg-blue-50">
-              MULTIMODAL INPUT
-            </Badge>
+            <div className="flex items-center gap-2 flex-wrap">
+              <Badge variant="outline" className="text-[10px] font-semibold text-red-600 border-red-200 bg-red-50">❤ Heart</Badge>
+              <Badge variant="outline" className="text-[10px] font-semibold text-blue-600 border-blue-200 bg-blue-50">🩺 Diabetes</Badge>
+              <Badge variant="outline" className="text-[10px] font-semibold text-purple-600 border-purple-200 bg-purple-50">🧠 Stroke</Badge>
+            </div>
           </div>
 
           {/* Progress Bar */}
@@ -304,7 +252,7 @@ export default function PatientAssessment({ onComplete }: PatientAssessmentProps
               />
             </div>
             <p className="text-[10px] text-gray-400 mt-1.5">
-              {completedFields} of {totalRequired} required fields completed
+              {completedFields} of {totalRequired} required fields completed — results cover all 3 disease models simultaneously
             </p>
           </div>
         </div>
@@ -314,44 +262,23 @@ export default function PatientAssessment({ onComplete }: PatientAssessmentProps
           <Card className="animate-fade-in-up stagger-1">
             <CardHeader className="pb-3">
               <div className="flex items-center gap-3">
-                <div className="p-2.5 bg-blue-50 rounded-xl">
-                  <User className="w-4 h-4 text-blue-600" />
-                </div>
+                <div className="p-2.5 bg-blue-50 rounded-xl"><User className="w-4 h-4 text-blue-600" /></div>
                 <div>
-                  <CardTitle className="text-[15px]">
-                    Section A: Demographic &amp; Administrative
-                  </CardTitle>
-                  <p className="text-[11px] text-gray-400 mt-0.5">
-                    Patient identification and socioeconomic indicators
-                  </p>
+                  <CardTitle className="text-[15px]">Section A: Demographic &amp; Administrative</CardTitle>
+                  <p className="text-[11px] text-gray-400 mt-0.5">Patient identification and socioeconomic indicators</p>
                 </div>
               </div>
             </CardHeader>
             <CardContent className="space-y-4 pt-2">
               <div className="grid sm:grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label htmlFor="patientId" className="text-xs font-medium text-gray-600">
-                    Patient ID
-                  </Label>
-                  <Input
-                    id="patientId"
-                    value={formData.patientId}
-                    onChange={(e) => updateField('patientId', e.target.value)}
-                    disabled
-                    className="bg-gray-50 text-sm font-mono"
-                  />
+                  <Label htmlFor="patientId" className="text-xs font-medium text-gray-600">Patient ID</Label>
+                  <Input id="patientId" value={formData.patientId} disabled className="bg-gray-50 text-sm font-mono" />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="sex" className="text-xs font-medium text-gray-600">
-                    Sex
-                  </Label>
-                  <Select
-                    value={formData.sex}
-                    onValueChange={(value) => updateField('sex', value)}
-                  >
-                    <SelectTrigger className="text-sm border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-600">
-                      <SelectValue placeholder="Select sex" />
-                    </SelectTrigger>
+                  <Label htmlFor="sex" className="text-xs font-medium text-gray-600">Sex</Label>
+                  <Select value={formData.sex} onValueChange={(v) => updateField('sex', v)}>
+                    <SelectTrigger className="text-sm"><SelectValue placeholder="Select sex" /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="0">Female</SelectItem>
                       <SelectItem value="1">Male</SelectItem>
@@ -359,62 +286,29 @@ export default function PatientAssessment({ onComplete }: PatientAssessmentProps
                   </Select>
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="age" className="text-xs font-medium text-gray-600">
-                    Age Category
-                  </Label>
-                  <Select
-                    value={formData.age}
-                    onValueChange={(value) => updateField('age', value)}
-                  >
-                    <SelectTrigger className="text-sm border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-600">
-                      <SelectValue placeholder="Select age range" />
-                    </SelectTrigger>
+                  <Label htmlFor="age" className="text-xs font-medium text-gray-600">Age Category</Label>
+                  <Select value={formData.age} onValueChange={(v) => updateField('age', v)}>
+                    <SelectTrigger className="text-sm"><SelectValue placeholder="Select age range" /></SelectTrigger>
                     <SelectContent>
-                      {ageCategories.map((cat) => (
-                        <SelectItem key={cat.value} value={cat.value}>
-                          {cat.label}
-                        </SelectItem>
-                      ))}
+                      {ageCategories.map((c) => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}
                     </SelectContent>
                   </Select>
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="education" className="text-xs font-medium text-gray-600">
-                    Education Level
-                  </Label>
-                  <Select
-                    value={formData.education}
-                    onValueChange={(value) => updateField('education', value)}
-                  >
-                    <SelectTrigger className="text-sm border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-600">
-                      <SelectValue placeholder="Select education" />
-                    </SelectTrigger>
+                  <Label htmlFor="education" className="text-xs font-medium text-gray-600">Education Level</Label>
+                  <Select value={formData.education} onValueChange={(v) => updateField('education', v)}>
+                    <SelectTrigger className="text-sm"><SelectValue placeholder="Select education" /></SelectTrigger>
                     <SelectContent>
-                      {educationLevels.map((level) => (
-                        <SelectItem key={level.value} value={level.value}>
-                          {level.label}
-                        </SelectItem>
-                      ))}
+                      {educationLevels.map((l) => <SelectItem key={l.value} value={l.value}>{l.label}</SelectItem>)}
                     </SelectContent>
                   </Select>
                 </div>
                 <div className="space-y-2 sm:col-span-2">
-                  <Label htmlFor="income" className="text-xs font-medium text-gray-600">
-                    Annual Household Income
-                  </Label>
-                  <Select
-                    value={formData.income}
-                    onValueChange={(value) => updateField('income', value)}
-                  >
-                    <SelectTrigger className="text-sm border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-600">
-                      <SelectValue placeholder="Select income bracket" />
-                    </SelectTrigger>
+                  <Label htmlFor="income" className="text-xs font-medium text-gray-600">Annual Household Income</Label>
+                  <Select value={formData.income} onValueChange={(v) => updateField('income', v)}>
+                    <SelectTrigger className="text-sm"><SelectValue placeholder="Select income bracket" /></SelectTrigger>
                     <SelectContent>
-                      {incomeLevels.map((level) => (
-                        <SelectItem key={level.value} value={level.value}>
-                          {level.label}
-                        </SelectItem>
-                      ))}
+                      {incomeLevels.map((l) => <SelectItem key={l.value} value={l.value}>{l.label}</SelectItem>)}
                     </SelectContent>
                   </Select>
                 </div>
@@ -426,287 +320,134 @@ export default function PatientAssessment({ onComplete }: PatientAssessmentProps
           <Card className="animate-fade-in-up stagger-2">
             <CardHeader className="pb-3">
               <div className="flex items-center gap-3">
-                <div className="p-2.5 bg-blue-50 rounded-xl">
-                  <Heart className="w-4 h-4 text-blue-600" />
-                </div>
+                <div className="p-2.5 bg-blue-50 rounded-xl"><Heart className="w-4 h-4 text-blue-600" /></div>
                 <div className="flex-1">
-                  <CardTitle className="text-[15px]">
-                    Section B: Clinical Indicators
-                  </CardTitle>
-                  <p className="text-[11px] text-gray-400 mt-0.5">
-                    Multimodal Input Stream 1 — Biometric &amp; clinical measurements
-                  </p>
+                  <CardTitle className="text-[15px]">Section B: Clinical Indicators</CardTitle>
+                  <p className="text-[11px] text-gray-400 mt-0.5">Multimodal Input Stream 1 — Biometric &amp; clinical measurements</p>
                 </div>
-                <Badge variant="outline" className="text-[9px] font-semibold text-blue-600 border-blue-200 bg-blue-50">
-                  CLINICAL
-                </Badge>
+                <Badge variant="outline" className="text-[9px] font-semibold text-blue-600 border-blue-200 bg-blue-50">CLINICAL</Badge>
               </div>
             </CardHeader>
             <CardContent className="space-y-5 pt-2">
-              {/* Clinical Toggles */}
-              <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                {clinicalToggles.map((toggle) => (
-                  <div
-                    key={toggle.id}
-                    className="flex items-center justify-between p-3.5 bg-gray-50 rounded-xl border border-gray-200 hover:border-gray-300 transition-colors"
-                  >
-                    <div className="space-y-0.5 mr-3">
-                      <Label
-                        htmlFor={toggle.id}
-                        className="text-xs font-medium text-gray-700 cursor-pointer"
-                      >
-                        {toggle.label}
-                      </Label>
-                      <p className="text-[10px] text-gray-400 leading-tight">
-                        {toggle.description}
-                      </p>
-                    </div>
-                    <Switch
-                      id={toggle.id}
-                      checked={toggle.checked}
-                      onCheckedChange={(checked) => updateField(toggle.id, checked)}
-                    />
-                  </div>
-                ))}
-              </div>
+              <ToggleGrid items={clinicalToggles} cols={3} />
 
-              {/* BMI & General Health */}
               <div className="grid sm:grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label htmlFor="bmi" className="text-xs font-medium text-gray-600">
-                    Body Mass Index (BMI)
-                  </Label>
+                  <Label htmlFor="bmi" className="text-xs font-medium text-gray-600">Body Mass Index (BMI)</Label>
                   <div className="relative">
                     <Input
-                      id="bmi"
-                      type="number"
-                      step="0.1"
-                      min="10"
-                      max="70"
-                      placeholder="e.g., 25.3"
-                      value={formData.bmi}
+                      id="bmi" type="number" step="0.1" min="10" max="70"
+                      placeholder="e.g., 25.3" value={formData.bmi}
                       onChange={(e) => updateField('bmi', e.target.value)}
                       className="text-sm pr-16"
                     />
-                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-medium text-gray-400">
-                      kg/m²
-                    </span>
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-medium text-gray-400">kg/m²</span>
                   </div>
                   {formData.bmi && (
-                    <p
-                      className={`text-[10px] font-medium ${
-                        Number(formData.bmi) >= 30
-                          ? 'text-red-600'
-                          : Number(formData.bmi) >= 25
-                          ? 'text-yellow-600'
-                          : 'text-green-600'
-                      }`}
-                    >
-                      {Number(formData.bmi) >= 30
-                        ? '⚠ Obese range'
-                        : Number(formData.bmi) >= 25
-                        ? '⚡ Overweight range'
-                        : '✓ Healthy range'}
+                    <p className={`text-[10px] font-medium ${Number(formData.bmi) >= 30 ? 'text-red-600' : Number(formData.bmi) >= 25 ? 'text-yellow-600' : 'text-green-600'}`}>
+                      {Number(formData.bmi) >= 30 ? '⚠ Obese range' : Number(formData.bmi) >= 25 ? '⚡ Overweight range' : '✓ Healthy range'}
                     </p>
                   )}
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="genHealth" className="text-xs font-medium text-gray-600">
-                    General Health Perception
-                  </Label>
-                  <Select
-                    value={formData.genHealth}
-                    onValueChange={(value) => updateField('genHealth', value)}
-                  >
-                    <SelectTrigger className="text-sm border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-600">
-                      <SelectValue placeholder="Self-reported health status" />
-                    </SelectTrigger>
+                  <Label htmlFor="genHealth" className="text-xs font-medium text-gray-600">General Health Perception</Label>
+                  <Select value={formData.genHealth} onValueChange={(v) => updateField('genHealth', v)}>
+                    <SelectTrigger className="text-sm"><SelectValue placeholder="Self-reported health status" /></SelectTrigger>
                     <SelectContent>
-                      {healthScale.map((scale) => (
-                        <SelectItem key={scale.value} value={scale.value}>
-                          {scale.label}
-                        </SelectItem>
-                      ))}
+                      {healthScale.map((s) => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}
                     </SelectContent>
                   </Select>
                 </div>
               </div>
 
-              {/* Sliders */}
               <div className="space-y-4">
-                <div className="space-y-3 bg-gray-50 rounded-xl p-4 border border-gray-200">
-                  <div className="flex items-center justify-between">
-                    <Label className="text-xs font-medium text-gray-600">
-                      Mental Health — Days not good (past 30 days)
-                    </Label>
-                    <span className="text-sm font-semibold text-gray-900 min-w-[2.5rem] text-right">
-                      {formData.mentalHealth}
-                    </span>
-                  </div>
-                  <Slider
-                    value={[formData.mentalHealth]}
-                    onValueChange={(value) => updateField('mentalHealth', value[0])}
-                    max={30}
-                    step={1}
-                    className="w-full"
-                  />
-                  <div className="flex justify-between text-[9px] text-gray-400 font-medium">
-                    <span>0 (None)</span>
-                    <span>15</span>
-                    <span>30 (Every day)</span>
-                  </div>
-                </div>
-                <div className="space-y-3 bg-gray-50 rounded-xl p-4 border border-gray-200">
-                  <div className="flex items-center justify-between">
-                    <Label className="text-xs font-medium text-gray-600">
-                      Physical Health — Days not good (past 30 days)
-                    </Label>
-                    <span className="text-sm font-semibold text-gray-900 min-w-[2.5rem] text-right">
-                      {formData.physHealth}
-                    </span>
-                  </div>
-                  <Slider
-                    value={[formData.physHealth]}
-                    onValueChange={(value) => updateField('physHealth', value[0])}
-                    max={30}
-                    step={1}
-                    className="w-full"
-                  />
-                  <div className="flex justify-between text-[9px] text-gray-400 font-medium">
-                    <span>0 (None)</span>
-                    <span>15</span>
-                    <span>30 (Every day)</span>
-                  </div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Section C: Behavioral & Lifestyle */}
-          <Card className="animate-fade-in-up stagger-3">
-            <CardHeader className="pb-3">
-              <div className="flex items-center gap-3">
-                <div className="p-2.5 bg-blue-50 rounded-xl">
-                  <Activity className="w-4 h-4 text-blue-600" />
-                </div>
-                <div className="flex-1">
-                  <CardTitle className="text-[15px]">
-                    Section C: Behavioral &amp; Lifestyle Indicators
-                  </CardTitle>
-                  <p className="text-[11px] text-gray-400 mt-0.5">
-                    Multimodal Input Stream 2 — Lifestyle and behavioral patterns
-                  </p>
-                </div>
-                <Badge variant="outline" className="text-[9px] font-semibold text-blue-600 border-blue-200 bg-blue-50">
-                  NOVELTY
-                </Badge>
-              </div>
-            </CardHeader>
-            <CardContent className="pt-2">
-              <div className="grid sm:grid-cols-2 gap-3">
-                {lifestyleToggles.map((toggle) => (
-                  <div
-                    key={toggle.id}
-                    className={`flex items-center justify-between p-3.5 rounded-xl border transition-all ${
-                      toggle.checked
-                        ? 'bg-blue-50/50 border-blue-200'
-                        : 'bg-gray-50 border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    <div className="space-y-0.5 mr-3">
-                      <Label
-                        htmlFor={toggle.id}
-                        className="text-xs font-medium text-gray-700 cursor-pointer"
-                      >
-                        {toggle.label}
-                      </Label>
-                      <p className="text-[10px] text-gray-400 leading-tight">
-                        {toggle.description}
-                      </p>
+                {[
+                  { key: 'mentalHealth', label: 'Mental Health — Days not good (past 30 days)', value: formData.mentalHealth },
+                  { key: 'physHealth', label: 'Physical Health — Days not good (past 30 days)', value: formData.physHealth },
+                ].map(({ key, label, value }) => (
+                  <div key={key} className="space-y-3 bg-gray-50 rounded-xl p-4 border border-gray-200">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-xs font-medium text-gray-600">{label}</Label>
+                      <span className="text-sm font-semibold text-gray-900 min-w-[2.5rem] text-right">{value}</span>
                     </div>
-                    <Switch
-                      id={toggle.id}
-                      checked={toggle.checked}
-                      onCheckedChange={(checked) => updateField(toggle.id, checked)}
-                    />
+                    <Slider value={[value]} onValueChange={(v) => updateField(key, v[0])} max={30} step={1} className="w-full" />
+                    <div className="flex justify-between text-[9px] text-gray-400 font-medium">
+                      <span>0 (None)</span><span>15</span><span>30 (Every day)</span>
+                    </div>
                   </div>
                 ))}
               </div>
             </CardContent>
           </Card>
 
-          {/* Section D: Healthcare Access */}
-          <Card className="animate-fade-in-up stagger-3">
+          {/* Section C: Medical History — drives cross-disease inference */}
+          <Card className="animate-fade-in-up stagger-2 border-amber-100">
             <CardHeader className="pb-3">
               <div className="flex items-center gap-3">
-                <div className="p-2.5 bg-blue-50 rounded-xl">
-                  <ShieldCheck className="w-4 h-4 text-blue-600" />
-                </div>
+                <div className="p-2.5 bg-amber-50 rounded-xl"><Brain className="w-4 h-4 text-amber-600" /></div>
                 <div className="flex-1">
-                  <CardTitle className="text-[15px]">
-                    Section D: Healthcare Access
-                  </CardTitle>
-                  <p className="text-[11px] text-gray-400 mt-0.5">
-                    Insurance coverage and healthcare access indicators
-                  </p>
+                  <CardTitle className="text-[15px]">Section C: Medical History</CardTitle>
+                  <p className="text-[11px] text-gray-400 mt-0.5">Used as cross-disease input features in the fusion engine</p>
                 </div>
-                <Badge variant="outline" className="text-[9px] font-semibold text-blue-600 border-blue-200 bg-blue-50">
-                  ACCESS
-                </Badge>
+                <Badge variant="outline" className="text-[9px] font-semibold text-amber-600 border-amber-200 bg-amber-50">CROSS-DISEASE</Badge>
               </div>
             </CardHeader>
             <CardContent className="pt-2">
-              <div className="grid sm:grid-cols-2 gap-3">
-                {healthcareToggles.map((toggle) => (
-                  <div
-                    key={toggle.id}
-                    className={`flex items-center justify-between p-3.5 rounded-xl border transition-all ${
-                      toggle.checked
-                        ? 'bg-blue-50/50 border-blue-200'
-                        : 'bg-gray-50 border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    <div className="space-y-0.5 mr-3">
-                      <Label
-                        htmlFor={toggle.id}
-                        className="text-xs font-medium text-gray-700 cursor-pointer"
-                      >
-                        {toggle.label}
-                      </Label>
-                      <p className="text-[10px] text-gray-400 leading-tight">
-                        {toggle.description}
-                      </p>
-                    </div>
-                    <Switch
-                      id={toggle.id}
-                      checked={toggle.checked}
-                      onCheckedChange={(checked) => updateField(toggle.id, checked)}
-                    />
-                  </div>
-                ))}
-              </div>
+              <ToggleGrid items={historyToggles} cols={3} />
             </CardContent>
           </Card>
 
-          {/* Submit Section */}
+          {/* Section D: Behavioral & Lifestyle */}
+          <Card className="animate-fade-in-up stagger-3">
+            <CardHeader className="pb-3">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-blue-50 rounded-xl"><Activity className="w-4 h-4 text-blue-600" /></div>
+                <div className="flex-1">
+                  <CardTitle className="text-[15px]">Section D: Behavioral &amp; Lifestyle Indicators</CardTitle>
+                  <p className="text-[11px] text-gray-400 mt-0.5">Multimodal Input Stream 2 — Lifestyle and behavioral patterns</p>
+                </div>
+                <Badge variant="outline" className="text-[9px] font-semibold text-blue-600 border-blue-200 bg-blue-50">NOVELTY</Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="pt-2">
+              <ToggleGrid items={lifestyleToggles} cols={2} />
+            </CardContent>
+          </Card>
+
+          {/* Section E: Healthcare Access */}
+          <Card className="animate-fade-in-up stagger-3">
+            <CardHeader className="pb-3">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-blue-50 rounded-xl"><ShieldCheck className="w-4 h-4 text-blue-600" /></div>
+                <div className="flex-1">
+                  <CardTitle className="text-[15px]">Section E: Healthcare Access</CardTitle>
+                  <p className="text-[11px] text-gray-400 mt-0.5">Insurance coverage and healthcare access indicators</p>
+                </div>
+                <Badge variant="outline" className="text-[9px] font-semibold text-blue-600 border-blue-200 bg-blue-50">ACCESS</Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="pt-2">
+              <ToggleGrid items={healthcareToggles} cols={2} />
+            </CardContent>
+          </Card>
+
+          {/* Submit */}
           <Card className="bg-white border-gray-200 animate-fade-in-up stagger-4">
             <CardContent className="p-5 sm:p-6">
               <div className="flex items-start gap-3 mb-5">
-                <div className="p-2 bg-blue-50 rounded-lg shrink-0">
-                  <Info className="w-4 h-4 text-blue-600" />
-                </div>
+                <div className="p-2 bg-blue-50 rounded-lg shrink-0"><Info className="w-4 h-4 text-blue-600" /></div>
                 <div>
                   <p className="text-xs text-gray-600 leading-relaxed">
                     This assessment uses a{' '}
-                    <strong className="text-gray-900">Soft Voting Ensemble</strong> of three
-                    base models (Logistic Regression, Random Forest, XGBoost) trained on{' '}
-                    <strong className="text-gray-900">253,680 BRFSS 2015 samples</strong>.
-                    Results include SHAP-based explanations for clinical interpretability.
+                    <strong className="text-gray-900">Soft Voting Ensemble</strong> of three base models
+                    (Logistic Regression, Random Forest, XGBoost) trained on{' '}
+                    <strong className="text-gray-900">253,680 BRFSS 2015 samples</strong>. A single patient
+                    vector simultaneously runs through all three disease inference engines — Diabetes, Heart
+                    Disease, and Stroke — with individual SHAP explanations per disease.
                   </p>
                 </div>
               </div>
 
-              {/* Error message */}
               {error && (
                 <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-xl flex items-start gap-2">
                   <AlertCircle className="w-4 h-4 text-red-500 mt-0.5 shrink-0" />
@@ -715,29 +456,28 @@ export default function PatientAssessment({ onComplete }: PatientAssessmentProps
               )}
 
               <Button
-                type="submit"
-                size="lg"
-                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium text-sm py-6 rounded-full transition-colors"
+                type="submit" size="lg"
+                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium text-sm py-6 rounded-full"
                 disabled={loading}
               >
                 {loading ? (
                   <div className="flex items-center gap-2.5">
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Running Ensemble Risk Assessment...</span>
+                    <span>Running Multi-Disease Ensemble Assessment...</span>
                   </div>
                 ) : (
-                  <span>Run Ensemble Risk Assessment</span>
+                  <span>Run Multi-Disease Risk Assessment →</span>
                 )}
               </Button>
 
               <div className="flex items-center justify-center gap-4 mt-3 text-[10px] text-gray-400">
-                <span className="flex items-center gap-1">
-                  <ShieldCheck className="w-3 h-3" /> HIPAA Compliant
-                </span>
+                <span className="flex items-center gap-1"><ShieldCheck className="w-3 h-3" /> HIPAA Compliant</span>
                 <span>•</span>
                 <span>3 Models × Soft Voting</span>
                 <span>•</span>
-                <span>SHAP Explanations</span>
+                <span>SHAP per Disease</span>
+                <span>•</span>
+                <span>Gemini AI Synthesis</span>
               </div>
             </CardContent>
           </Card>

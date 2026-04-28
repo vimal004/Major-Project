@@ -4,13 +4,10 @@ import { useState, useEffect, useRef } from 'react';
 import {
   TriangleAlert as AlertTriangle,
   CircleCheck as CheckCircle2,
-  TrendingUp,
-  Lightbulb,
   Brain,
   ArrowRight,
   Shield,
   FileText,
-  Stethoscope,
   Target,
   Sparkles,
   MessageCircle,
@@ -20,6 +17,10 @@ import {
   User,
   ChevronDown,
   RefreshCw,
+  Heart,
+  Stethoscope,
+  Activity,
+  Lightbulb,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -34,32 +35,14 @@ import {
   Cell,
   PieChart,
   Pie,
-  ReferenceLine,
 } from 'recharts';
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_BASE_URL || 'http://localhost:8000';
 
-/**
- * assessmentData shape (passed from page.tsx after the API call):
- * {
- *   patientId: string,
- *   payload: { ... },            // the 21-field input sent to the API
- *   status: "success",
- *   risk_probability: number,
- *   risk_level: string,
- *   shap_data: {
- *     base_value: number,
- *     features: [{ name, value, contribution }, ...]
- *   }
- * }
- */
 interface RiskDiagnosticsProps {
   assessmentData: any;
 }
 
-// ─────────────────────────────────────────────────────────────────
-// Simple markdown renderer for Gemini responses
-// ─────────────────────────────────────────────────────────────────
 function renderMarkdown(text: string) {
   if (!text) return null;
 
@@ -99,7 +82,6 @@ function renderMarkdown(text: string) {
   for (const line of lines) {
     const trimmed = line.trim();
 
-    // Headings
     if (trimmed.startsWith('## ')) {
       flushList();
       elements.push(
@@ -123,7 +105,6 @@ function renderMarkdown(text: string) {
       continue;
     }
 
-    // Numbered list
     const olMatch = trimmed.match(/^(\d+)[.)]\s+(.*)/);
     if (olMatch) {
       if (listType !== 'ol') flushList();
@@ -132,7 +113,6 @@ function renderMarkdown(text: string) {
       continue;
     }
 
-    // Bullet list
     if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
       if (listType !== 'ul') flushList();
       listType = 'ul';
@@ -140,13 +120,11 @@ function renderMarkdown(text: string) {
       continue;
     }
 
-    // Empty line
     if (trimmed === '') {
       flushList();
       continue;
     }
 
-    // Paragraph
     flushList();
     elements.push(
       <p
@@ -161,34 +139,35 @@ function renderMarkdown(text: string) {
   return <div className="space-y-1">{elements}</div>;
 }
 
-// ─────────────────────────────────────────────────────────────────
-// Chat message type
-// ─────────────────────────────────────────────────────────────────
 interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp: Date;
 }
 
-// ─────────────────────────────────────────────────────────────────
-// Quick question suggestions
-// ─────────────────────────────────────────────────────────────────
 const QUICK_QUESTIONS = [
-  "What foods should I eat to reduce my diabetes risk?",
-  "How does my BMI affect my diabetes risk specifically?",
+  "What foods should I eat to reduce my risks?",
+  "How does my BMI affect my risk specifically?",
   "What exercise routine would you recommend for me?",
-  "Can I reverse my diabetes risk completely?",
-  "What medical tests should I get done?",
-  "How does stress affect diabetes risk?",
+  "Can I reverse my risk completely?",
 ];
 
+type DiseaseType = 'diabetes' | 'heart' | 'stroke';
+
 export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps) {
+  const [activeTab, setActiveTab] = useState<DiseaseType>('diabetes');
   const [animateGauge, setAnimateGauge] = useState(false);
 
-  // AI Interpretation state
-  const [aiInterpretation, setAiInterpretation] = useState<string | null>(null);
-  const [interpretationLoading, setInterpretationLoading] = useState(false);
-  const [interpretationError, setInterpretationError] = useState<string | null>(null);
+  // Interpretations per disease
+  const [interpretations, setInterpretations] = useState<Record<string, string | null>>({
+    diabetes: null, heart: null, stroke: null
+  });
+  const [interpretationLoading, setInterpretationLoading] = useState<Record<string, boolean>>({
+    diabetes: false, heart: false, stroke: false
+  });
+  const [interpretationErrors, setInterpretationErrors] = useState<Record<string, string | null>>({
+    diabetes: null, heart: null, stroke: null
+  });
 
   // Chat state
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -196,159 +175,28 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
   const [chatLoading, setChatLoading] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
-  const chatInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const timer = setTimeout(() => setAnimateGauge(true), 300);
     return () => clearTimeout(timer);
-  }, []);
+  }, [activeTab]); // re-animate on tab change
 
-  // Auto-scroll chat to bottom
   useEffect(() => {
     if (chatEndRef.current) {
       chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [chatMessages]);
 
-  // Auto-fetch AI interpretation when data is available
   useEffect(() => {
-    if (assessmentData?.status === 'success' && !aiInterpretation && !interpretationLoading) {
-      fetchInterpretation();
-    }
-  }, [assessmentData]);
-
-  // -------------------------------------------------------------------
-  // Fetch AI interpretation from Gemini
-  // -------------------------------------------------------------------
-  const fetchInterpretation = async () => {
-    if (!assessmentData || assessmentData.status !== 'success') return;
-
-    setInterpretationLoading(true);
-    setInterpretationError(null);
-
-    try {
-      const response = await fetch(`${BACKEND_URL}/api/interpret`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          risk_probability: assessmentData.risk_probability,
-          risk_level: assessmentData.risk_level,
-          base_value: assessmentData.shap_data?.base_value ?? 0.5,
-          features: assessmentData.shap_data?.features ?? [],
-          patient_payload: assessmentData.payload ?? null,
-        }),
-      });
-
-      if (!response.ok) {
-        const errBody = await response.json().catch(() => ({}));
-        const detail = errBody.detail || `Server responded with ${response.status}`;
-        // Check if it's a quota/rate-limit error
-        if (response.status === 429 || detail.toLowerCase().includes('quota')) {
-          throw new Error(
-            'All AI models have temporarily exceeded their quota limits. ' +
-            'Please wait 1-2 minutes and click "Try Again". ' +
-            'This is a free-tier rate limit and will reset automatically.'
-          );
-        }
-        throw new Error(detail);
+    if (assessmentData?.status === 'success') {
+      // Auto-fetch interpretation for the currently active tab if not loaded
+      if (!interpretations[activeTab] && !interpretationLoading[activeTab] && !interpretationErrors[activeTab]) {
+        fetchInterpretation(activeTab);
       }
-
-      const result = await response.json();
-      setAiInterpretation(result.interpretation);
-    } catch (err: any) {
-      console.error('AI interpretation failed:', err);
-      const errorMsg = err.message || '';
-      if (errorMsg.includes('quota') || errorMsg.includes('429') || errorMsg.includes('rate')) {
-        setInterpretationError(
-          'AI quota temporarily exceeded. The system tries multiple Gemini models, ' +
-          'but all are currently rate-limited. Please wait 1-2 minutes and try again.'
-        );
-      } else {
-        setInterpretationError(
-          errorMsg || 'Failed to get AI interpretation. Make sure the backend is running.'
-        );
-      }
-    } finally {
-      setInterpretationLoading(false);
     }
-  };
+  }, [assessmentData, activeTab]);
 
-  // -------------------------------------------------------------------
-  // Send a chat message
-  // -------------------------------------------------------------------
-  const sendChatMessage = async (question?: string) => {
-    const msg = question || chatInput.trim();
-    if (!msg || chatLoading) return;
-
-    const userMessage: ChatMessage = {
-      role: 'user',
-      content: msg,
-      timestamp: new Date(),
-    };
-
-    setChatMessages((prev) => [...prev, userMessage]);
-    setChatInput('');
-    setChatLoading(true);
-
-    try {
-      // Build history for the API (excluding the current message)
-      const history = chatMessages.map((m) => ({
-        role: m.role,
-        content: m.content,
-      }));
-
-      const response = await fetch(`${BACKEND_URL}/api/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          question: msg,
-          risk_probability: assessmentData.risk_probability,
-          risk_level: assessmentData.risk_level,
-          base_value: assessmentData.shap_data?.base_value ?? 0.5,
-          features: assessmentData.shap_data?.features ?? [],
-          patient_payload: assessmentData.payload ?? null,
-          history,
-        }),
-      });
-
-      if (!response.ok) {
-        const errBody = await response.json().catch(() => ({}));
-        throw new Error(errBody.detail || `Server responded with ${response.status}`);
-      }
-
-      const result = await response.json();
-
-      const assistantMessage: ChatMessage = {
-        role: 'assistant',
-        content: result.response,
-        timestamp: new Date(),
-      };
-
-      setChatMessages((prev) => [...prev, assistantMessage]);
-    } catch (err: any) {
-      console.error('Chat error:', err);
-      const errorMessage: ChatMessage = {
-        role: 'assistant',
-        content: `I'm sorry, I encountered an error: ${err.message}. Please try again.`,
-        timestamp: new Date(),
-      };
-      setChatMessages((prev) => [...prev, errorMessage]);
-    } finally {
-      setChatLoading(false);
-    }
-  };
-
-  const handleChatKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      sendChatMessage();
-    }
-  };
-
-  // -------------------------------------------------------------------
-  // Guard: no data yet
-  // -------------------------------------------------------------------
-  if (!assessmentData || assessmentData.status !== 'success') {
+  if (!assessmentData || assessmentData.status !== 'success' || !assessmentData.assessments) {
     return (
       <div className="min-h-screen bg-[#f8f9fa] flex items-center justify-center p-6">
         <Card className="max-w-lg w-full">
@@ -362,7 +210,7 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
               </h3>
               <p className="text-sm text-gray-500 leading-relaxed max-w-sm mx-auto">
                 Please complete the Patient Assessment form first to generate risk
-                predictions, model consensus, and SHAP-based XAI explanations.
+                predictions.
               </p>
             </div>
             <div className="flex items-center justify-center gap-2 text-xs text-gray-400">
@@ -375,54 +223,108 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
     );
   }
 
-  // -------------------------------------------------------------------
-  // Unpack the real API response
-  // -------------------------------------------------------------------
   const patientId: string = assessmentData.patientId || 'PT-0000';
-  const riskProbability: number = assessmentData.risk_probability ?? 0;
-  const riskLevel: string = assessmentData.risk_level ?? 'Unknown';
-  const baseValue: number = assessmentData.shap_data?.base_value ?? 0.5;
-  const shapFeatures: { name: string; value: number; contribution: number; influence_pct?: number; direction?: string }[] =
-    assessmentData.shap_data?.features ?? [];
+  const assessments = assessmentData.assessments;
 
-  // -------------------------------------------------------------------
-  // Derived data
-  // -------------------------------------------------------------------
-  const getRiskStyle = (probability: number) => {
-    if (probability >= 0.7)
-      return {
-        bg: 'bg-red-50',
-        text: 'text-red-600',
-        badgeBg: 'bg-red-50 text-red-700 border border-red-200',
-        gaugeColor: '#dc2626',
-      };
-    if (probability >= 0.4)
-      return {
-        bg: 'bg-yellow-50',
-        text: 'text-yellow-600',
-        badgeBg: 'bg-yellow-50 text-yellow-700 border border-yellow-200',
-        gaugeColor: '#ca8a04',
-      };
-    return {
-      bg: 'bg-green-50',
-      text: 'text-green-600',
-      badgeBg: 'bg-green-50 text-green-700 border border-green-200',
-      gaugeColor: '#16a34a',
-    };
+  const fetchInterpretation = async (disease: DiseaseType) => {
+    const data = assessments[disease];
+    if (!data) return;
+
+    setInterpretationLoading(prev => ({ ...prev, [disease]: true }));
+    setInterpretationErrors(prev => ({ ...prev, [disease]: null }));
+
+    try {
+      const response = await fetch(`${BACKEND_URL}/api/interpret`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          disease,
+          risk_probability: data.prob,
+          risk_level: data.level,
+          base_value: data.shap_base || 0.5,
+          features: data.shap_features || [],
+          patient_payload: assessmentData.payload || null,
+        }),
+      });
+
+      if (!response.ok) throw new Error('Failed to fetch interpretation');
+      
+      const result = await response.json();
+      setInterpretations(prev => ({ ...prev, [disease]: result.interpretation }));
+    } catch (err: any) {
+      setInterpretationErrors(prev => ({ ...prev, [disease]: err.message || 'Error fetching interpretation' }));
+    } finally {
+      setInterpretationLoading(prev => ({ ...prev, [disease]: false }));
+    }
+  };
+
+  const sendChatMessage = async (question?: string) => {
+    const msg = question || chatInput.trim();
+    if (!msg || chatLoading) return;
+
+    const userMessage: ChatMessage = { role: 'user', content: msg, timestamp: new Date() };
+    setChatMessages((prev) => [...prev, userMessage]);
+    setChatInput('');
+    setChatLoading(true);
+
+    try {
+      const history = chatMessages.map((m) => ({ role: m.role, content: m.content }));
+      
+      // Send context of the currently active disease
+      const currentAssessment = assessments[activeTab];
+
+      const response = await fetch(`${BACKEND_URL}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question: msg,
+          context_disease: activeTab,
+          risk_probability: currentAssessment.prob,
+          risk_level: currentAssessment.level,
+          features: currentAssessment.shap_features || [],
+          patient_payload: assessmentData.payload || null,
+          history,
+        }),
+      });
+
+      if (!response.ok) throw new Error('Failed to get chat response');
+      const result = await response.json();
+      setChatMessages((prev) => [...prev, { role: 'assistant', content: result.response, timestamp: new Date() }]);
+    } catch (err: any) {
+      setChatMessages((prev) => [...prev, { role: 'assistant', content: `Error: ${err.message}`, timestamp: new Date() }]);
+    } finally {
+      setChatLoading(false);
+    }
+  };
+
+  const handleChatKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendChatMessage();
+    }
+  };
+
+  const currentAssessment = assessments[activeTab];
+  const riskProbability = currentAssessment.prob || 0;
+  const riskLevel = currentAssessment.level || 'Unknown';
+  const baseValue = currentAssessment.shap_base || 0.5;
+  const shapFeatures = currentAssessment.shap_features || [];
+
+  const getRiskStyle = (prob: number) => {
+    if (prob >= 0.7) return { text: 'text-red-600', badgeBg: 'bg-red-50 text-red-700 border border-red-200', gaugeColor: '#dc2626' };
+    if (prob >= 0.4) return { text: 'text-yellow-600', badgeBg: 'bg-yellow-50 text-yellow-700 border border-yellow-200', gaugeColor: '#ca8a04' };
+    return { text: 'text-green-600', badgeBg: 'bg-green-50 text-green-700 border border-green-200', gaugeColor: '#16a34a' };
   };
 
   const riskStyle = getRiskStyle(riskProbability);
 
-  // SHAP data: use influence_pct (always positive, 0-100 scale)
-  // contribution is signed (positive=risk, negative=protective)
   const shapWaterfallData = [...shapFeatures]
-    .sort((a, b) => Math.abs(b.contribution) - Math.abs(a.contribution))
-    .map((feature) => ({
+    .sort((a: any, b: any) => Math.abs(b.contribution) - Math.abs(a.contribution))
+    .map((feature: any) => ({
       name: feature.name,
-      contribution: feature.contribution,  // signed: +risk, -protective
-      influence: feature.influence_pct ?? Math.abs(feature.contribution),  // unsigned 0-100
-      direction: feature.direction ?? (feature.contribution > 0 ? 'risk' : 'protective'),
-      label: `${(feature.influence_pct ?? Math.abs(feature.contribution)).toFixed(1)}%`,
+      contribution: feature.contribution,
+      influence: feature.influence_pct ?? Math.abs(feature.contribution),
+      direction: feature.contribution > 0 ? 'risk' : 'protective',
     }));
 
   const gaugeData = [
@@ -430,89 +332,89 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
     { name: 'Safe', value: animateGauge ? (1 - riskProbability) * 100 : 100 },
   ];
 
-  // Chart domain: 0-100% scale for influence
-  const maxInfluence = Math.max(
-    10,
-    ...shapWaterfallData.map((d) => d.influence)
-  );
+  const maxInfluence = Math.max(10, ...shapWaterfallData.map((d: any) => d.influence));
   const chartDomain = [0, Math.ceil(maxInfluence / 10) * 10 + 5];
 
-  // Top risk drivers & protective factors
-  const riskDrivers = shapFeatures
-    .filter((f) => f.contribution > 0)
-    .sort((a, b) => b.contribution - a.contribution);
+  const riskDrivers = shapFeatures.filter((f: any) => f.contribution > 0).sort((a: any, b: any) => b.contribution - a.contribution);
+  const protectiveFactors = shapFeatures.filter((f: any) => f.contribution < 0).sort((a: any, b: any) => a.contribution - b.contribution);
 
-  const protectiveFactors = shapFeatures
-    .filter((f) => f.contribution < 0)
-    .sort((a, b) => a.contribution - b.contribution);
-
-  // Build risk-level dependent clinical text
-  const riskClassName =
-    riskProbability >= 0.7
-      ? 'high risk'
-      : riskProbability >= 0.4
-      ? 'moderate risk'
-      : 'low risk';
-
-  const riskColorClass =
-    riskProbability >= 0.7
-      ? 'text-red-600'
-      : riskProbability >= 0.4
-      ? 'text-yellow-600'
-      : 'text-green-600';
+  const riskClassName = riskProbability >= 0.7 ? 'high risk' : riskProbability >= 0.4 ? 'moderate risk' : 'low risk';
+  const riskColorClass = riskProbability >= 0.7 ? 'text-red-600' : riskProbability >= 0.4 ? 'text-yellow-600' : 'text-green-600';
 
   return (
     <div className="min-h-screen bg-[#f8f9fa]">
       <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-10 space-y-8">
+        
         {/* Header */}
         <div className="space-y-2 animate-fade-in-up">
           <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:justify-between">
             <div>
               <h1 className="text-2xl font-semibold text-gray-900">
-                Risk Diagnostics &amp; XAI Analysis
+                Multi-Disease Risk Diagnostics &amp; XAI Analysis
               </h1>
               <p className="text-sm text-gray-500 mt-0.5">
-                Patient <strong className="font-mono text-gray-700">{patientId}</strong>{' '}
-                • Type-2 Diabetes Module
+                Patient <strong className="font-mono text-gray-700">{patientId}</strong>
               </p>
             </div>
-            <Badge
-              variant="outline"
-              className="self-start sm:self-auto text-[10px] font-semibold tracking-wider text-blue-600 border-blue-200 bg-blue-50"
-            >
-              EXPLAINABLE AI
+            <Badge variant="outline" className="text-[10px] font-semibold tracking-wider text-blue-600 border-blue-200 bg-blue-50">
+              EXPLAINABLE AI FUSION
             </Badge>
           </div>
         </div>
 
-        {/* Risk Score Card */}
+        {/* Multi-Disease Tabs */}
+        <div className="flex bg-white rounded-xl border border-gray-200 p-1 space-x-1 overflow-x-auto">
+          <button
+            onClick={() => setActiveTab('diabetes')}
+            className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-lg text-sm font-semibold transition-all ${
+              activeTab === 'diabetes' ? 'bg-blue-50 text-blue-700 shadow-sm border border-blue-100' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'
+            }`}
+          >
+            <Activity className={`w-4 h-4 ${activeTab === 'diabetes' ? 'text-blue-600' : ''}`} />
+            Type-2 Diabetes
+          </button>
+          <button
+            onClick={() => setActiveTab('heart')}
+            className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-lg text-sm font-semibold transition-all ${
+              activeTab === 'heart' ? 'bg-red-50 text-red-700 shadow-sm border border-red-100' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'
+            }`}
+          >
+            <Heart className={`w-4 h-4 ${activeTab === 'heart' ? 'text-red-600' : ''}`} />
+            Heart Disease
+          </button>
+          <button
+            onClick={() => setActiveTab('stroke')}
+            className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-lg text-sm font-semibold transition-all ${
+              activeTab === 'stroke' ? 'bg-purple-50 text-purple-700 shadow-sm border border-purple-100' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900'
+            }`}
+          >
+            <Brain className={`w-4 h-4 ${activeTab === 'stroke' ? 'text-purple-600' : ''}`} />
+            Stroke Risk
+          </button>
+        </div>
+
         <div className="grid lg:grid-cols-3 gap-5 animate-fade-in-up stagger-1">
           {/* Risk Gauge */}
           <Card className="lg:col-span-2">
             <CardHeader className="pb-0">
-              <CardTitle className="flex items-center gap-2 text-base">
+              <CardTitle className="flex items-center gap-2 text-base capitalize">
                 <AlertTriangle className={`w-4 h-4 ${riskStyle.text}`} />
-                Overall Ensemble Risk Score
+                Overall {activeTab.replace('-', ' ')} Risk Score
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="flex flex-col sm:flex-row items-center gap-6">
-                {/* Gauge Chart */}
+              <div className="flex flex-col sm:flex-row items-center gap-6 mt-4">
                 <div className="relative w-52 h-28 shrink-0">
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
                       <Pie
                         data={gaugeData}
-                        cx="50%"
-                        cy="100%"
-                        startAngle={180}
-                        endAngle={0}
-                        innerRadius={65}
-                        outerRadius={90}
+                        cx="50%" cy="100%"
+                        startAngle={180} endAngle={0}
+                        innerRadius={65} outerRadius={90}
                         paddingAngle={2}
                         dataKey="value"
-                        animationDuration={1500}
-                        animationBegin={300}
+                        animationDuration={1000}
                       >
                         <Cell fill={riskStyle.gaugeColor} />
                         <Cell fill="#e5e7eb" />
@@ -526,12 +428,9 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
                   </div>
                 </div>
 
-                {/* Risk Details */}
                 <div className="flex-1 space-y-3">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span
-                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-semibold ${riskStyle.badgeBg}`}
-                    >
+                    <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-semibold ${riskStyle.badgeBg}`}>
                       <AlertTriangle className="w-3.5 h-3.5" />
                       {riskLevel}
                     </span>
@@ -539,29 +438,17 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
                       Soft Voting Ensemble
                     </span>
                   </div>
-                  <p className="text-xs text-gray-500 leading-relaxed">
-                    The ensemble consensus indicates{' '}
-                    <strong className={riskColorClass}>{riskClassName}</strong> for Type-2
-                    Diabetes. The model analyzed 21 clinical features and predicts a{' '}
-                    <strong className="text-gray-700">
-                      {(riskProbability * 100).toFixed(1)}%
-                    </strong>{' '}
-                    probability of diabetes.
+                  <p className="text-xs text-gray-500 leading-relaxed capitalize">
+                    The ensemble consensus indicates <strong className={riskColorClass}>{riskClassName}</strong> for {activeTab.replace('-', ' ')}. The model predicts a <strong className="text-gray-700">{(riskProbability * 100).toFixed(1)}%</strong> probability.
                   </p>
-                  {/* Risk Scale */}
                   <div className="space-y-1.5">
                     <div className="flex justify-between text-[9px] font-medium text-gray-400">
-                      <span>Low Risk</span>
-                      <span>Moderate</span>
-                      <span>High Risk</span>
+                      <span>Low Risk</span><span>Moderate</span><span>High Risk</span>
                     </div>
                     <div className="h-2 rounded-full bg-gradient-to-r from-green-400 via-yellow-400 to-red-500 relative">
                       <div
                         className="absolute top-1/2 -translate-y-1/2 w-3.5 h-3.5 bg-white rounded-full border-2 border-gray-800 transition-all duration-1000"
-                        style={{
-                          left: `${riskProbability * 100}%`,
-                          transform: 'translate(-50%, -50%)',
-                        }}
+                        style={{ left: `${riskProbability * 100}%`, transform: 'translate(-50%, -50%)' }}
                       />
                     </div>
                   </div>
@@ -574,12 +461,11 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-sm flex items-center gap-2">
-                <Brain className="w-4 h-4 text-blue-600" />
-                Key Risk Drivers
+                <Brain className="w-4 h-4 text-blue-600" /> Key Risk Drivers
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              {riskDrivers.slice(0, 3).map((feature, index) => (
+              {riskDrivers.slice(0, 3).map((feature: any, index: number) => (
                 <div key={index} className="space-y-1.5">
                   <div className="flex items-center justify-between text-xs">
                     <span className="flex items-center gap-1.5 font-medium text-gray-600">
@@ -594,13 +480,8 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
                     <div
                       className="bg-red-500 h-2 rounded-full transition-all duration-1000 ease-out"
                       style={{
-                        width: animateGauge
-                          ? `${Math.min(
-                              feature.influence_pct ?? Math.abs(feature.contribution),
-                              100
-                            )}%`
-                          : '0%',
-                        transitionDelay: `${index * 200 + 500}ms`,
+                        width: animateGauge ? `${Math.min(feature.influence_pct ?? Math.abs(feature.contribution), 100)}%` : '0%',
+                        transitionDelay: `${index * 200 + 300}ms`,
                       }}
                     />
                   </div>
@@ -610,10 +491,7 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
                 <div className="pt-2 border-t border-gray-100">
                   <div className="flex items-center gap-2 text-xs">
                     <CheckCircle2 className="w-3.5 h-3.5 text-green-600" />
-                    <span className="text-gray-500">
-                      {protectiveFactors.length} protective factor
-                      {protectiveFactors.length !== 1 ? 's' : ''} detected
-                    </span>
+                    <span className="text-gray-500">{protectiveFactors.length} protective factor(s) detected</span>
                   </div>
                 </div>
               )}
@@ -630,165 +508,47 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
                   <Lightbulb className="w-4 h-4 text-blue-600" />
                 </div>
                 <div>
-                  <CardTitle className="text-base">
-                    Feature Influence Analysis
-                  </CardTitle>
-                  <p className="text-[11px] text-gray-400 mt-0.5">
-                    How much each factor influenced the AI&apos;s decision for this patient
-                  </p>
+                  <CardTitle className="text-base">Feature Influence Analysis (SHAP)</CardTitle>
+                  <p className="text-[11px] text-gray-400 mt-0.5">How factors influenced the AI's decision</p>
                 </div>
               </div>
-              <Badge
-                variant="outline"
-                className="self-start sm:self-auto text-[9px] font-semibold text-blue-600 border-blue-200 bg-blue-50"
-              >
-                EXPLAINABLE AI ENGINE
+              <Badge variant="outline" className="text-[9px] font-semibold text-blue-600 border-blue-200 bg-blue-50">
+                EXPLAINABLE AI
               </Badge>
             </div>
           </CardHeader>
           <CardContent className="space-y-5">
-            {/* Interpretation Guide */}
-            <div className="bg-gray-50 border border-gray-200 rounded-2xl p-4">
-              <p className="text-xs text-gray-600 leading-relaxed">
-                <strong className="text-gray-900">How to read this chart:</strong> Each bar
-                shows what percentage of the AI&apos;s decision was influenced by that factor.
-                Bars in{' '}
-                <span className="text-red-600 font-semibold">red = risk-increasing</span>{' '}and{' '}
-                <span className="text-blue-600 font-semibold">blue = protective</span>.
-                Longer bars mean the factor had a bigger role in the prediction.
-                All influences add up to 100% of the model&apos;s reasoning.
-              </p>
-            </div>
-
-            {/* SHAP Chart */}
             {shapWaterfallData.length > 0 ? (
               <div className="bg-white rounded-xl border border-gray-200 p-2 sm:p-4">
                 <ResponsiveContainer width="100%" height={Math.max(280, shapWaterfallData.length * 48)}>
-                  <BarChart
-                    data={shapWaterfallData}
-                    layout="vertical"
-                    margin={{ top: 10, right: 60, left: 100, bottom: 10 }}
-                  >
+                  <BarChart data={shapWaterfallData} layout="vertical" margin={{ top: 10, right: 60, left: 100, bottom: 10 }}>
                     <CartesianGrid strokeDasharray="4 4" stroke="#e5e7eb" horizontal={false} />
-                    <XAxis
-                      type="number"
-                      domain={chartDomain}
-                      tick={{ fontSize: 10, fill: '#9ca3af' }}
-                      axisLine={{ stroke: '#e5e7eb' }}
-                      tickFormatter={(value: number) => `${value.toFixed(0)}%`}
-                      label={{ value: '% Influence on Decision', position: 'insideBottom', offset: -5, fontSize: 10, fill: '#9ca3af' }}
-                    />
-                    <YAxis
-                      type="category"
-                      dataKey="name"
-                      width={90}
-                      tick={{ fontSize: 11, fill: '#374151', fontWeight: 500 }}
-                      axisLine={false}
-                      tickLine={false}
-                    />
+                    <XAxis type="number" domain={chartDomain} tick={{ fontSize: 10, fill: '#9ca3af' }} tickFormatter={(val) => `${val}%`} />
+                    <YAxis type="category" dataKey="name" width={90} tick={{ fontSize: 11, fill: '#374151', fontWeight: 500 }} axisLine={false} tickLine={false} />
                     <Tooltip
-                      formatter={(value: any, name: any, props: any) => {
-                        const entry = props?.payload;
-                        const dir = entry?.direction === 'risk' ? 'Risk-Increasing' : 'Protective';
-                        return [
-                          `${Math.abs(Number(value)).toFixed(1)}% of the model's decision (${dir})`,
-                          'Feature Influence',
-                        ];
+                      formatter={(val: any, name: any, props: any) => {
+                        const dir = props?.payload?.direction === 'risk' ? 'Risk-Increasing' : 'Protective';
+                        return [`${Math.abs(Number(val)).toFixed(1)}% (${dir})`, 'Influence'];
                       }}
-                      contentStyle={{
-                        backgroundColor: '#ffffff',
-                        border: '1px solid #e5e7eb',
-                        borderRadius: '12px',
-                        fontSize: '12px',
-                        padding: '10px 14px',
-                        boxShadow: 'none',
-                      }}
-                      labelStyle={{ fontWeight: 600, color: '#111827' }}
+                      contentStyle={{ borderRadius: '8px', fontSize: '12px' }}
                     />
-                    <Bar
-                      dataKey="influence"
-                      radius={[0, 6, 6, 0]}
-                      animationDuration={1200}
-                      animationBegin={600}
-                    >
-                      {shapWaterfallData.map((entry, index) => (
-                        <Cell
-                          key={`cell-${index}`}
-                          fill={entry.direction === 'risk' ? '#dc2626' : '#1a73e8'}
-                          fillOpacity={0.85}
-                        />
+                    <Bar dataKey="influence" radius={[0, 6, 6, 0]} animationDuration={800}>
+                      {shapWaterfallData.map((entry, idx) => (
+                        <Cell key={`cell-${idx}`} fill={entry.direction === 'risk' ? '#dc2626' : '#1a73e8'} fillOpacity={0.85} />
                       ))}
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
               </div>
             ) : (
-              <div className="bg-gray-50 rounded-xl border border-gray-200 p-8 text-center">
-                <p className="text-sm text-gray-500">
-                  SHAP feature contributions are not available for this prediction.
-                </p>
+              <div className="bg-gray-50 rounded-xl border border-gray-200 p-8 text-center text-sm text-gray-500">
+                SHAP feature contributions are not available.
               </div>
             )}
-
-            {/* Risk/Protective Factor Summary */}
-            <div className="grid sm:grid-cols-2 gap-4">
-              <div className="bg-gray-50 border border-gray-200 rounded-2xl p-4 space-y-2.5">
-                <div className="flex items-center gap-2">
-                  <div className="w-2.5 h-2.5 bg-red-600 rounded-sm" />
-                  <span className="text-xs font-semibold text-gray-900">
-                    Risk-Increasing Factors
-                  </span>
-                </div>
-                <div className="space-y-1.5">
-                  {riskDrivers.length > 0 ? (
-                    riskDrivers.map((feature, idx) => (
-                      <div
-                        key={idx}
-                        className="flex items-center justify-between text-xs"
-                      >
-                        <span className="text-gray-700 font-medium">{feature.name}</span>
-                        <span className="font-semibold text-red-600">
-                          {(feature.influence_pct ?? Math.abs(feature.contribution)).toFixed(1)}% influence
-                        </span>
-                      </div>
-                    ))
-                  ) : (
-                    <p className="text-xs text-gray-400">None identified</p>
-                  )}
-                </div>
-              </div>
-              <div className="bg-gray-50 border border-gray-200 rounded-2xl p-4 space-y-2.5">
-                <div className="flex items-center gap-2">
-                  <div className="w-2.5 h-2.5 bg-blue-600 rounded-sm" />
-                  <span className="text-xs font-semibold text-gray-900">
-                    Protective Factors
-                  </span>
-                </div>
-                <div className="space-y-1.5">
-                  {protectiveFactors.length > 0 ? (
-                    protectiveFactors.map((feature, idx) => (
-                      <div
-                        key={idx}
-                        className="flex items-center justify-between text-xs"
-                      >
-                        <span className="text-gray-700 font-medium">{feature.name}</span>
-                        <span className="font-semibold text-blue-600">
-                          {(feature.influence_pct ?? Math.abs(feature.contribution)).toFixed(1)}% influence
-                        </span>
-                      </div>
-                    ))
-                  ) : (
-                    <p className="text-xs text-gray-400">None identified</p>
-                  )}
-                </div>
-              </div>
-            </div>
           </CardContent>
         </Card>
 
-        {/* ═══════════════════════════════════════════════════════════════
-            AI-POWERED INTERPRETATION (Gemini)
-           ═══════════════════════════════════════════════════════════════ */}
+        {/* AI-Powered Interpretation */}
         <Card className="animate-fade-in-up stagger-3 border-2 border-indigo-100">
           <CardHeader className="pb-3">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
@@ -800,386 +560,118 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
                   <CardTitle className="text-base flex items-center gap-2">
                     AI-Powered Clinical Interpretation
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[9px] font-semibold bg-gradient-to-r from-indigo-50 to-purple-50 text-indigo-700 rounded-full border border-indigo-200">
-                      <Sparkles className="w-2.5 h-2.5" />
                       GEMINI AI
                     </span>
                   </CardTitle>
-                  <p className="text-[11px] text-gray-400 mt-0.5">
-                    Detailed, human-readable interpretation of SHAP analysis with personalized recommendations
-                  </p>
                 </div>
               </div>
-              {aiInterpretation && (
+              {interpretations[activeTab] && (
                 <button
-                  onClick={fetchInterpretation}
-                  disabled={interpretationLoading}
-                  className="self-start sm:self-auto flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium text-indigo-600 bg-indigo-50 border border-indigo-200 rounded-full hover:bg-indigo-100 transition-colors disabled:opacity-50"
+                  onClick={() => fetchInterpretation(activeTab)}
+                  disabled={interpretationLoading[activeTab]}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium text-indigo-600 bg-indigo-50 border border-indigo-200 rounded-full hover:bg-indigo-100 transition-colors disabled:opacity-50"
                 >
-                  <RefreshCw className={`w-3 h-3 ${interpretationLoading ? 'animate-spin' : ''}`} />
-                  Regenerate
+                  <RefreshCw className={`w-3 h-3 ${interpretationLoading[activeTab] ? 'animate-spin' : ''}`} /> Regenerate
                 </button>
               )}
             </div>
           </CardHeader>
           <CardContent>
-            {interpretationLoading ? (
+            {interpretationLoading[activeTab] ? (
               <div className="flex flex-col items-center justify-center py-12 space-y-4">
-                <div className="relative">
-                  <div className="w-16 h-16 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-2xl flex items-center justify-center animate-pulse">
-                    <Sparkles className="w-7 h-7 text-white" />
-                  </div>
-                  <div className="absolute -bottom-1 -right-1 w-6 h-6 bg-white rounded-full border-2 border-indigo-200 flex items-center justify-center">
-                    <Loader2 className="w-3.5 h-3.5 text-indigo-600 animate-spin" />
-                  </div>
-                </div>
-                <div className="text-center space-y-1">
-                  <p className="text-sm font-medium text-gray-900">
-                    Gemini AI is analyzing your results...
-                  </p>
-                  <p className="text-xs text-gray-400">
-                    Generating personalized interpretation and mitigation strategies
-                  </p>
-                </div>
-                <div className="flex items-center gap-2">
-                  {[0, 1, 2].map((i) => (
-                    <div
-                      key={i}
-                      className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce"
-                      style={{ animationDelay: `${i * 150}ms` }}
-                    />
-                  ))}
-                </div>
+                <Loader2 className="w-8 h-8 text-indigo-600 animate-spin" />
+                <p className="text-sm font-medium text-gray-900">Gemini AI is analyzing results...</p>
               </div>
-            ) : interpretationError ? (
+            ) : interpretationErrors[activeTab] ? (
               <div className="bg-red-50 border border-red-200 rounded-2xl p-5 space-y-3">
                 <div className="flex items-center gap-2">
                   <AlertTriangle className="w-4 h-4 text-red-500" />
-                  <span className="text-sm font-medium text-red-800">
-                    Interpretation Unavailable
-                  </span>
+                  <span className="text-sm font-medium text-red-800">Interpretation Unavailable</span>
                 </div>
-                <p className="text-xs text-red-600 leading-relaxed">{interpretationError}</p>
-                <button
-                  onClick={fetchInterpretation}
-                  className="flex items-center gap-2 px-4 py-2 text-xs font-medium text-red-700 bg-red-100 rounded-full hover:bg-red-200 transition-colors"
-                >
-                  <RefreshCw className="w-3 h-3" />
-                  Try Again
-                </button>
+                <p className="text-xs text-red-600">{interpretationErrors[activeTab]}</p>
+                <button onClick={() => fetchInterpretation(activeTab)} className="px-4 py-2 text-xs font-medium text-red-700 bg-red-100 rounded-full">Try Again</button>
               </div>
-            ) : aiInterpretation ? (
+            ) : interpretations[activeTab] ? (
               <div className="bg-gradient-to-br from-gray-50 to-indigo-50/30 border border-gray-200 rounded-2xl p-5 sm:p-6">
-                {renderMarkdown(aiInterpretation)}
+                {renderMarkdown(interpretations[activeTab]!)}
               </div>
-            ) : null}
+            ) : (
+              <div className="text-center py-8">
+                <button onClick={() => fetchInterpretation(activeTab)} className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm">Generate Interpretation</button>
+              </div>
+            )}
           </CardContent>
         </Card>
 
-        {/* ═══════════════════════════════════════════════════════════════
-            FOLLOW-UP CHAT (Gemini)
-           ═══════════════════════════════════════════════════════════════ */}
+        {/* AI Chat */}
         <Card className="animate-fade-in-up stagger-4 border-2 border-indigo-100">
           <CardHeader className="pb-2">
-            <button
-              onClick={() => setShowChat(!showChat)}
-              className="w-full flex items-center justify-between"
-            >
+            <button onClick={() => setShowChat(!showChat)} className="w-full flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <div className="p-2.5 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl">
-                  <MessageCircle className="w-4 h-4 text-white" />
-                </div>
+                <div className="p-2.5 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl"><MessageCircle className="w-4 h-4 text-white" /></div>
                 <div className="text-left">
-                  <CardTitle className="text-base flex items-center gap-2">
-                    Ask Follow-up Questions
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[9px] font-semibold bg-gradient-to-r from-indigo-50 to-purple-50 text-indigo-700 rounded-full border border-indigo-200">
-                      <Bot className="w-2.5 h-2.5" />
-                      AI CHAT
-                    </span>
-                  </CardTitle>
-                  <p className="text-[11px] text-gray-400 mt-0.5">
-                    Ask anything about your diagnosis, risk factors, or mitigation strategies
-                  </p>
+                  <CardTitle className="text-base flex items-center gap-2">Ask Follow-up Questions</CardTitle>
+                  <p className="text-[11px] text-gray-400 mt-0.5">Chat with AI about your {activeTab} risk</p>
                 </div>
               </div>
-              <ChevronDown
-                className={`w-5 h-5 text-gray-400 transition-transform duration-300 ${
-                  showChat ? 'rotate-180' : ''
-                }`}
-              />
+              <ChevronDown className={`w-5 h-5 text-gray-400 transition-transform ${showChat ? 'rotate-180' : ''}`} />
             </button>
           </CardHeader>
 
           {showChat && (
             <CardContent className="pt-2 space-y-4">
-              {/* Quick Questions */}
               {chatMessages.length === 0 && (
-                <div className="space-y-3">
-                  <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Suggested Questions
-                  </p>
-                  <div className="grid sm:grid-cols-2 gap-2">
-                    {QUICK_QUESTIONS.map((q, i) => (
-                      <button
-                        key={i}
-                        onClick={() => sendChatMessage(q)}
-                        disabled={chatLoading}
-                        className="text-left p-3 bg-white border border-gray-200 rounded-xl text-xs text-gray-600 hover:bg-indigo-50 hover:border-indigo-200 hover:text-indigo-700 transition-all disabled:opacity-50 disabled:hover:bg-white"
-                      >
-                        <span className="flex items-start gap-2">
-                          <MessageCircle className="w-3.5 h-3.5 text-indigo-400 shrink-0 mt-0.5" />
-                          {q}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Chat Messages */}
-              {chatMessages.length > 0 && (
-                <div className="bg-gray-50 border border-gray-200 rounded-2xl overflow-hidden">
-                  <div className="max-h-[500px] overflow-y-auto p-4 space-y-4">
-                    {chatMessages.map((msg, index) => (
-                      <div
-                        key={index}
-                        className={`flex gap-3 ${
-                          msg.role === 'user' ? 'flex-row-reverse' : ''
-                        }`}
-                      >
-                        {/* Avatar */}
-                        <div
-                          className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
-                            msg.role === 'user'
-                              ? 'bg-blue-600'
-                              : 'bg-gradient-to-br from-indigo-500 to-purple-600'
-                          }`}
-                        >
-                          {msg.role === 'user' ? (
-                            <User className="w-4 h-4 text-white" />
-                          ) : (
-                            <Bot className="w-4 h-4 text-white" />
-                          )}
-                        </div>
-                        {/* Message bubble */}
-                        <div
-                          className={`max-w-[85%] rounded-2xl p-3.5 ${
-                            msg.role === 'user'
-                              ? 'bg-blue-600 text-white'
-                              : 'bg-white border border-gray-200'
-                          }`}
-                        >
-                          {msg.role === 'user' ? (
-                            <p className="text-[13px] leading-relaxed">{msg.content}</p>
-                          ) : (
-                            <div>{renderMarkdown(msg.content)}</div>
-                          )}
-                          <p
-                            className={`text-[9px] mt-2 ${
-                              msg.role === 'user'
-                                ? 'text-blue-200'
-                                : 'text-gray-300'
-                            }`}
-                          >
-                            {msg.timestamp.toLocaleTimeString([], {
-                              hour: '2-digit',
-                              minute: '2-digit',
-                            })}
-                          </p>
-                        </div>
-                      </div>
-                    ))}
-
-                    {/* Typing indicator */}
-                    {chatLoading && (
-                      <div className="flex gap-3">
-                        <div className="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shrink-0">
-                          <Bot className="w-4 h-4 text-white" />
-                        </div>
-                        <div className="bg-white border border-gray-200 rounded-2xl p-3.5">
-                          <div className="flex items-center gap-1.5">
-                            {[0, 1, 2].map((i) => (
-                              <div
-                                key={i}
-                                className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce"
-                                style={{ animationDelay: `${i * 150}ms` }}
-                              />
-                            ))}
-                            <span className="text-[10px] text-gray-400 ml-2">
-                              AI is thinking...
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    <div ref={chatEndRef} />
-                  </div>
-                </div>
-              )}
-
-              {/* Chat Input */}
-              <div className="flex items-center gap-2">
-                <div className="flex-1 relative">
-                  <input
-                    ref={chatInputRef}
-                    type="text"
-                    value={chatInput}
-                    onChange={(e) => setChatInput(e.target.value)}
-                    onKeyDown={handleChatKeyDown}
-                    placeholder="Ask about your diagnosis, risk factors, or what you can do..."
-                    disabled={chatLoading}
-                    className="w-full pl-4 pr-12 py-3.5 bg-white border border-gray-200 rounded-full text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all disabled:opacity-60"
-                  />
-                </div>
-                <button
-                  onClick={() => sendChatMessage()}
-                  disabled={!chatInput.trim() || chatLoading}
-                  className="w-11 h-11 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-full flex items-center justify-center text-white hover:from-indigo-600 hover:to-purple-700 transition-all disabled:opacity-40 disabled:hover:from-indigo-500 disabled:hover:to-purple-600 shrink-0"
-                >
-                  {chatLoading ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <Send className="w-4 h-4" />
-                  )}
-                </button>
-              </div>
-
-              <p className="text-[10px] text-gray-400 text-center">
-                Powered by Google Gemini AI • Responses are for educational purposes only
-              </p>
-            </CardContent>
-          )}
-        </Card>
-
-        {/* Clinical Interpretation (static) */}
-        <Card className="animate-fade-in-up stagger-5">
-          <CardHeader className="pb-3">
-            <div className="flex items-center gap-3">
-              <div className="p-2.5 bg-gray-100 rounded-xl">
-                <FileText className="w-4 h-4 text-gray-600" />
-              </div>
-              <CardTitle className="text-base">
-                Clinical Interpretation &amp; Recommendations
-              </CardTitle>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {/* Risk Summary */}
-            <div className="bg-gray-50 border border-gray-200 rounded-2xl p-4 space-y-3">
-              <div className="flex items-center gap-2">
-                <Target className="w-4 h-4 text-gray-600" />
-                <h4 className="text-sm font-semibold text-gray-900">
-                  Risk Summary — {patientId}
-                </h4>
-              </div>
-              <p className="text-xs text-gray-600 leading-relaxed">
-                This patient presents with a{' '}
-                <strong className={riskColorClass}>{riskClassName}</strong> (
-                {(riskProbability * 100).toFixed(1)}%) of developing Type-2 Diabetes,
-                elevated from the baseline population risk of{' '}
-                {(baseValue * 100).toFixed(0)}%.
-                {riskDrivers.length > 0
-                  ? ' The primary risk drivers identified through SHAP analysis are:'
-                  : ''}
-              </p>
-              {riskDrivers.length > 0 && (
-                <div className="grid sm:grid-cols-3 gap-3">
-                  {riskDrivers.slice(0, 3).map((feature, idx) => (
-                    <div
-                      key={idx}
-                      className="bg-white rounded-xl p-3 border border-gray-200"
+                <div className="grid sm:grid-cols-2 gap-2">
+                  {QUICK_QUESTIONS.map((q, i) => (
+                    <button
+                      key={i} onClick={() => sendChatMessage(q)} disabled={chatLoading}
+                      className="text-left p-3 bg-white border border-gray-200 rounded-xl text-xs text-gray-600 hover:bg-indigo-50 hover:text-indigo-700 transition-all"
                     >
-                      <div className="text-[10px] font-medium text-gray-400 uppercase tracking-wider">
-                        #{idx + 1} Risk Driver
-                      </div>
-                      <div className="text-sm font-semibold text-gray-900 mt-1">
-                        {feature.name} ({feature.value})
-                      </div>
-                      <div className="text-[10px] font-semibold text-red-600 mt-0.5">
-                        {(feature.influence_pct ?? Math.abs(feature.contribution)).toFixed(1)}% influence
-                      </div>
-                    </div>
+                      {q}
+                    </button>
                   ))}
                 </div>
               )}
-            </div>
 
-            {/* Protective Factors */}
-            {protectiveFactors.length > 0 && (
-              <div className="bg-green-50 border border-green-200 rounded-2xl p-4 space-y-2">
-                <div className="flex items-center gap-2">
-                  <Shield className="w-4 h-4 text-green-600" />
-                  <h4 className="text-sm font-semibold text-gray-900">
-                    Protective Factors Identified
-                  </h4>
-                </div>
-                <p className="text-xs text-gray-600 leading-relaxed">
-                  Despite the assessed risk, the patient demonstrates positive lifestyle
-                  behaviors including{' '}
-                  {protectiveFactors
-                    .slice(0, 3)
-                    .map(
-                      (f) =>
-                        `${f.name} (${(f.influence_pct ?? Math.abs(f.contribution)).toFixed(1)}% influence)`
-                    )
-                    .join(', ')}
-                  . These factors actively mitigate risk and should be maintained and
-                  encouraged as part of the intervention plan.
-                </p>
-              </div>
-            )}
-
-            {/* Recommended Interventions */}
-            <div className="bg-gray-50 border border-gray-200 rounded-2xl p-4 space-y-3">
-              <div className="flex items-center gap-2">
-                <Lightbulb className="w-4 h-4 text-blue-600" />
-                <h4 className="text-sm font-semibold text-gray-900">
-                  Recommended Interventions
-                </h4>
-              </div>
-              <div className="space-y-2.5">
-                {[
-                  {
-                    num: 1,
-                    title: 'Weight Management',
-                    desc: 'Target BMI reduction through structured dietary intervention and increased physical activity intensity',
-                  },
-                  {
-                    num: 2,
-                    title: 'BP Monitoring',
-                    desc: 'Regular monitoring and potential pharmacological management of hypertension',
-                  },
-                  {
-                    num: 3,
-                    title: 'Dietary Counseling',
-                    desc: 'Focus on low glycemic index foods, portion control, and increased fiber intake',
-                  },
-                  {
-                    num: 4,
-                    title: 'Follow-up Assessment',
-                    desc: 'Repeat risk evaluation in 3 months post-intervention to track progress',
-                  },
-                ].map((item) => (
-                  <div key={item.num} className="flex items-start gap-3">
-                    <span className="w-5 h-5 rounded-full bg-blue-100 text-blue-700 text-[10px] font-semibold flex items-center justify-center shrink-0 mt-0.5">
-                      {item.num}
-                    </span>
-                    <div className="text-xs text-gray-600 leading-relaxed">
-                      <strong className="text-gray-900">{item.title}:</strong>{' '}
-                      {item.desc}
+              {chatMessages.length > 0 && (
+                <div className="bg-gray-50 border border-gray-200 rounded-2xl overflow-hidden p-4 space-y-4 max-h-[400px] overflow-y-auto">
+                  {chatMessages.map((msg, index) => (
+                    <div key={index} className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
+                      <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${msg.role === 'user' ? 'bg-blue-600 text-white' : 'bg-indigo-600 text-white'}`}>
+                        {msg.role === 'user' ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
+                      </div>
+                      <div className={`max-w-[85%] rounded-2xl p-3.5 ${msg.role === 'user' ? 'bg-blue-600 text-white' : 'bg-white border border-gray-200'}`}>
+                        {msg.role === 'user' ? <p className="text-[13px]">{msg.content}</p> : renderMarkdown(msg.content)}
+                      </div>
                     </div>
-                  </div>
-                ))}
-              </div>
-            </div>
+                  ))}
+                  {chatLoading && (
+                    <div className="flex gap-3">
+                      <div className="w-8 h-8 rounded-full bg-indigo-600 flex items-center justify-center shrink-0"><Bot className="w-4 h-4 text-white" /></div>
+                      <div className="bg-white border border-gray-200 rounded-2xl p-3.5 flex items-center gap-2">
+                        <Loader2 className="w-4 h-4 animate-spin text-indigo-400" /><span className="text-xs text-gray-400">AI is thinking...</span>
+                      </div>
+                    </div>
+                  )}
+                  <div ref={chatEndRef} />
+                </div>
+              )}
 
-            {/* Disclaimer */}
-            <div className="text-[10px] text-gray-400 text-center pt-2 border-t border-gray-100">
-              ⚕ This is a decision-support tool only. Clinical judgment should always supersede
-              algorithmic predictions. Consult with qualified healthcare professionals for
-              diagnosis and treatment.
-            </div>
-          </CardContent>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text" value={chatInput} onChange={(e) => setChatInput(e.target.value)} onKeyDown={handleChatKeyDown}
+                  placeholder="Ask a question..." disabled={chatLoading}
+                  className="flex-1 py-3 px-4 bg-white border border-gray-200 rounded-full text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+                <button
+                  onClick={() => sendChatMessage()} disabled={!chatInput.trim() || chatLoading}
+                  className="w-11 h-11 bg-indigo-600 rounded-full flex items-center justify-center text-white hover:bg-indigo-700 disabled:opacity-50 shrink-0"
+                >
+                  <Send className="w-4 h-4" />
+                </button>
+              </div>
+            </CardContent>
+          )}
         </Card>
       </div>
     </div>

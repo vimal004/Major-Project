@@ -179,13 +179,21 @@ export default function Home() {
               {/* Active Module */}
               <div className="bg-gray-50 rounded-2xl p-3 border border-gray-100">
                 <div className="text-[10px] font-semibold uppercase tracking-widest text-gray-400 mb-1.5">
-                  Active Module
+                  Active Modules
                 </div>
-                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 bg-green-600 rounded-full" />
-                  <span className="text-xs font-medium text-gray-800">
-                    Type-2 Diabetes
-                  </span>
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 bg-blue-600 rounded-full" />
+                    <span className="text-xs font-medium text-gray-800">Type-2 Diabetes</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 bg-red-600 rounded-full" />
+                    <span className="text-xs font-medium text-gray-800">Heart Disease</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 bg-purple-600 rounded-full" />
+                    <span className="text-xs font-medium text-gray-800">Stroke Risk</span>
+                  </div>
                 </div>
               </div>
               {/* Project Info */}
@@ -241,7 +249,7 @@ export default function Home() {
           <div className="ml-auto flex items-center gap-3">
             <div className="hidden md:flex items-center gap-1.5 text-[11px] font-medium text-gray-600 bg-gray-50 px-3 py-1.5 rounded-full border border-gray-200">
               <div className="w-1.5 h-1.5 bg-green-600 rounded-full" />
-              <span>Diabetes Module Active</span>
+              <span>Multi-Disease Active</span>
             </div>
             <div className="hidden sm:flex items-center gap-2 text-[11px] text-gray-500">
               <span className="font-medium">Vimal M & Alfred Ferdinand</span>

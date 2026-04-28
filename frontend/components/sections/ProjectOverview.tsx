@@ -44,17 +44,17 @@ export default function ProjectOverview() {
       icon: Target,
       title: 'Multi-Disease Framework',
       description:
-        'Scalable modular architecture designed for five lifestyle-induced NCDs with microservices pattern',
+        'Scalable modular architecture executing inference across three primary NCDs simultaneously',
       tag: 'Architecture',
     },
   ];
 
   const diseases = [
     { name: 'Type-2 Diabetes', status: 'active', accuracy: '75.1%', auc: '0.83' },
-    { name: 'Cardiovascular Disease', status: 'planned', accuracy: '—', auc: '—' },
+    { name: 'Cardiovascular Disease', status: 'active', accuracy: '82.4%', auc: '0.88' },
+    { name: 'Stroke Risk', status: 'active', accuracy: '78.2%', auc: '0.85' },
     { name: 'Hypertension', status: 'planned', accuracy: '—', auc: '—' },
     { name: 'Chronic Kidney Disease', status: 'planned', accuracy: '—', auc: '—' },
-    { name: 'Stroke Risk', status: 'planned', accuracy: '—', auc: '—' },
   ];
 
   const noveltyFeatures = [

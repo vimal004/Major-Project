@@ -37,6 +37,8 @@ import {
   Pie,
 } from 'recharts';
 
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_BASE_URL || 'http://localhost:8000';
+
 interface RiskDiagnosticsProps {
   assessmentData: any;
 }
@@ -255,6 +257,7 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
   const riskLevel = currentAssessment.level || 'Unknown';
   const baseValue = currentAssessment.shap_base || 0.5;
   const shapFeatures = currentAssessment.shap_features || [];
+  const shapDiagnostics = currentAssessment.shap_diagnostics || {};
   const localInterpretation = currentAssessment.local_interpretation_report || '';
   const aiInterpretation = currentAssessment.ai_interpretation_report || '';
   const aiReportSource = currentAssessment.ai_report_source || 'local_fallback';
@@ -273,7 +276,6 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
     .map((feature: any) => ({
       name: feature.name,
       contribution: feature.contribution,
-      influence: feature.influence_pct ?? Math.abs(feature.contribution),
       direction: feature.contribution > 0 ? 'risk' : 'protective',
     }));
 
@@ -282,14 +284,25 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
     { name: 'Safe', value: animateGauge ? (1 - riskProbability) * 100 : 100 },
   ];
 
-  const maxInfluence = Math.max(10, ...shapWaterfallData.map((d: any) => d.influence));
-  const chartDomain = [0, Math.ceil(maxInfluence / 10) * 10 + 5];
+  const maxAbsContribution = Math.max(0.1, ...shapWaterfallData.map((d: any) => Math.abs(d.contribution)));
+  const chartLimit = Math.ceil(maxAbsContribution * 10) / 10;
+  const chartDomain = [-chartLimit, chartLimit];
 
   const riskDrivers = shapFeatures.filter((f: any) => f.contribution > 0).sort((a: any, b: any) => b.contribution - a.contribution);
   const protectiveFactors = shapFeatures.filter((f: any) => f.contribution < 0).sort((a: any, b: any) => a.contribution - b.contribution);
 
   const riskClassName = riskProbability >= 0.7 ? 'high risk' : riskProbability >= 0.4 ? 'moderate risk' : 'low risk';
   const riskColorClass = riskProbability >= 0.7 ? 'text-red-600' : riskProbability >= 0.4 ? 'text-yellow-600' : 'text-green-600';
+  const baselineProbability = shapDiagnostics.baseline_probability ?? (1 / (1 + Math.exp(-baseValue)));
+  const explainedProbability = shapDiagnostics.explained_probability ?? null;
+  const explanationGap = shapDiagnostics.explanation_gap ?? null;
+  const totalFeatureContribution = shapDiagnostics.total_feature_contribution ?? null;
+  const scoreToTone = (value: number | null | undefined) => {
+    if (value === null || value === undefined) return 'text-gray-900';
+    if (value > 0) return 'text-red-600';
+    if (value < 0) return 'text-blue-600';
+    return 'text-gray-900';
+  };
 
   return (
     <div className="min-h-screen bg-[#f8f9fa]">
@@ -423,14 +436,14 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
                       <span>{feature.name}</span>
                     </span>
                     <span className="font-semibold text-red-600">
-                      {(feature.influence_pct ?? Math.abs(feature.contribution)).toFixed(1)}%
+                      +{Number(feature.contribution).toFixed(3)}
                     </span>
                   </div>
                   <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
                     <div
                       className="bg-red-500 h-2 rounded-full transition-all duration-1000 ease-out"
                       style={{
-                        width: animateGauge ? `${Math.min(feature.influence_pct ?? Math.abs(feature.contribution), 100)}%` : '0%',
+                        width: animateGauge ? `${Math.min((Math.abs(Number(feature.contribution)) / chartLimit) * 100, 100)}%` : '0%',
                         transitionDelay: `${index * 200 + 300}ms`,
                       }}
                     />
@@ -449,6 +462,43 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
           </Card>
         </div>
 
+        <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4 animate-fade-in-up stagger-2">
+          <Card>
+            <CardContent className="p-4 space-y-1">
+              <p className="text-[11px] font-medium text-gray-500">SHAP Baseline Probability</p>
+              <p className="text-2xl font-semibold text-gray-900">{(baselineProbability * 100).toFixed(1)}%</p>
+              <p className="text-[11px] text-gray-500">Average XGBoost prior risk before this patient's features are applied.</p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4 space-y-1">
+              <p className="text-[11px] font-medium text-gray-500">Net SHAP Feature Shift</p>
+              <p className={`text-2xl font-semibold ${scoreToTone(totalFeatureContribution)}`}>
+                {totalFeatureContribution !== null ? `${totalFeatureContribution > 0 ? '+' : ''}${Number(totalFeatureContribution).toFixed(3)}` : 'N/A'}
+              </p>
+              <p className="text-[11px] text-gray-500">Combined push/pull from all patient features in SHAP log-odds units.</p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4 space-y-1">
+              <p className="text-[11px] font-medium text-gray-500">SHAP-Explained Probability</p>
+              <p className="text-2xl font-semibold text-gray-900">
+                {explainedProbability !== null ? `${(explainedProbability * 100).toFixed(1)}%` : 'N/A'}
+              </p>
+              <p className="text-[11px] text-gray-500">Recovered from baseline plus SHAP contributions for the explainer branch.</p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4 space-y-1">
+              <p className="text-[11px] font-medium text-gray-500">Ensemble vs SHAP Gap</p>
+              <p className={`text-2xl font-semibold ${scoreToTone(explanationGap)}`}>
+                {explanationGap !== null ? `${explanationGap > 0 ? '+' : ''}${(Number(explanationGap) * 100).toFixed(1)}%` : 'N/A'}
+              </p>
+              <p className="text-[11px] text-gray-500">Difference between final ensemble probability and SHAP explanation path.</p>
+            </CardContent>
+          </Card>
+        </div>
+
         {/* Feature Influence Analysis */}
         <Card className="animate-fade-in-up stagger-2">
           <CardHeader className="pb-3">
@@ -459,7 +509,7 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
                 </div>
                 <div>
                   <CardTitle className="text-base">Feature Influence Analysis (SHAP)</CardTitle>
-                  <p className="text-[11px] text-gray-400 mt-0.5">How factors influenced the AI's decision</p>
+                  <p className="text-[11px] text-gray-400 mt-0.5">Signed SHAP values: positive pushes risk up, negative pulls risk down</p>
                 </div>
               </div>
               <Badge variant="outline" className="text-[9px] font-semibold text-blue-600 border-blue-200 bg-blue-50">
@@ -469,20 +519,21 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
           </CardHeader>
           <CardContent className="space-y-5">
             {shapWaterfallData.length > 0 ? (
+              <>
               <div className="bg-white rounded-xl border border-gray-200 p-2 sm:p-4">
                 <ResponsiveContainer width="100%" height={Math.max(280, shapWaterfallData.length * 48)}>
                   <BarChart data={shapWaterfallData} layout="vertical" margin={{ top: 10, right: 60, left: 100, bottom: 10 }}>
                     <CartesianGrid strokeDasharray="4 4" stroke="#e5e7eb" horizontal={false} />
-                    <XAxis type="number" domain={chartDomain} tick={{ fontSize: 10, fill: '#9ca3af' }} tickFormatter={(val) => `${val}%`} />
+                    <XAxis type="number" domain={chartDomain} tick={{ fontSize: 10, fill: '#9ca3af' }} tickFormatter={(val) => Number(val).toFixed(2)} />
                     <YAxis type="category" dataKey="name" width={90} tick={{ fontSize: 11, fill: '#374151', fontWeight: 500 }} axisLine={false} tickLine={false} />
                     <Tooltip
                       formatter={(val: any, name: any, props: any) => {
                         const dir = props?.payload?.direction === 'risk' ? 'Risk-Increasing' : 'Protective';
-                        return [`${Math.abs(Number(val)).toFixed(1)}% (${dir})`, 'Influence'];
+                        return [`${Number(val).toFixed(4)} (${dir})`, 'SHAP value'];
                       }}
                       contentStyle={{ borderRadius: '8px', fontSize: '12px' }}
                     />
-                    <Bar dataKey="influence" radius={[0, 6, 6, 0]} animationDuration={800}>
+                    <Bar dataKey="contribution" radius={[6, 6, 6, 6]} animationDuration={800}>
                       {shapWaterfallData.map((entry, idx) => (
                         <Cell key={`cell-${idx}`} fill={entry.direction === 'risk' ? '#dc2626' : '#1a73e8'} fillOpacity={0.85} />
                       ))}
@@ -490,51 +541,33 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
                   </BarChart>
                 </ResponsiveContainer>
               </div>
+              <div className="grid md:grid-cols-3 gap-3">
+                <div className="bg-gray-50 border border-gray-200 rounded-xl p-4">
+                  <p className="text-sm font-semibold text-gray-900 mb-1">Why SHAP scores are decimals</p>
+                  <p className="text-xs text-gray-600 leading-relaxed">
+                    SHAP values are additive model contributions, not percentages. In this tree-based binary setting they are typically shown in
+                    score space, often log-odds, so decimal values like <code>+0.27</code> or <code>-0.58</code> are normal.
+                  </p>
+                </div>
+                <div className="bg-gray-50 border border-gray-200 rounded-xl p-4">
+                  <p className="text-sm font-semibold text-gray-900 mb-1">What the baseline means</p>
+                  <p className="text-xs text-gray-600 leading-relaxed">
+                    The baseline is the explainer&apos;s average prediction before this patient&apos;s specific features are considered. Each SHAP value
+                    then pushes that baseline upward or downward to reach the explained score.
+                  </p>
+                </div>
+                <div className="bg-gray-50 border border-gray-200 rounded-xl p-4">
+                  <p className="text-sm font-semibold text-gray-900 mb-1">Why the final score can differ</p>
+                  <p className="text-xs text-gray-600 leading-relaxed">
+                    The served prediction comes from a soft-voting ensemble, while SHAP is currently computed from the XGBoost branch. The
+                    explanation is useful, but it is not yet a full explanation of the final ensemble probability.
+                  </p>
+                </div>
+              </div>
+              </>
             ) : (
               <div className="bg-gray-50 rounded-xl border border-gray-200 p-8 text-center text-sm text-gray-500">
                 SHAP feature contributions are not available.
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* AI-Powered Interpretation */}
-        <Card className="animate-fade-in-up stagger-3 border-2 border-indigo-100">
-          <CardHeader className="pb-3">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <div className="flex items-center gap-3">
-                <div className="p-2.5 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl">
-                  <Sparkles className="w-4 h-4 text-white" />
-                </div>
-                <div>
-                  <CardTitle className="text-base flex items-center gap-2">
-                    AI-Powered Clinical Interpretation
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[9px] font-semibold bg-gradient-to-r from-indigo-50 to-purple-50 text-indigo-700 rounded-full border border-indigo-200">
-                      {aiReportSource === 'gemini' ? 'GEMINI AI' : 'LOCAL FALLBACK'}
-                    </span>
-                  </CardTitle>
-                </div>
-              </div>
-              <div className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium text-indigo-600 bg-indigo-50 border border-indigo-200 rounded-full">
-                <RefreshCw className="w-3 h-3" /> Derived from latest backend assessment
-              </div>
-            </div>
-          </CardHeader>
-          <CardContent>
-            {aiInterpretation ? (
-              <div className="space-y-3">
-                {aiReportError && (
-                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-[11px] text-amber-700">
-                    AI generation warning: {aiReportError}
-                  </div>
-                )}
-                <div className="bg-gradient-to-br from-gray-50 to-indigo-50/30 border border-gray-200 rounded-2xl p-5 sm:p-6">
-                  {renderMarkdown(aiInterpretation)}
-                </div>
-              </div>
-            ) : (
-              <div className="bg-gray-50 border border-gray-200 rounded-2xl p-6 text-sm text-gray-500">
-                AI interpretation is unavailable for this assessment.
               </div>
             )}
           </CardContent>

@@ -231,17 +231,30 @@ def build_local_report(
 
 def groq_preprompt() -> str:
     return (
-        "You are a clinical decision-support assistant for risk interpretation. "
-        "Generate a concise but detailed, patient-specific interpretation report using SHAP data. "
-        "Take into account the optimal_clinical_threshold provided when discussing whether a patient is at risk. "
-        "Do not provide definitive diagnosis. Do not fabricate any missing values. "
-        "Use only the provided patient features and model outputs.\n\n"
-        "Output format:\n"
-        "1) Overall risk interpretation (2-4 sentences)\n"
-        "2) Key risk-increasing factors (bullet list)\n"
-        "3) Key risk-reducing/protective factors (bullet list)\n"
-        "4) Clinically sensible next-step checks/interventions (bullet list)\n"
-        "5) Safety disclaimer (single sentence)\n"
+        "You are an expert clinical decision-support AI specialized in Explainable AI (XAI) for multi-disease risk assessment. "
+        "Your role is to provide a comprehensive, clinically-grounded interpretation for an academic reviewer panel. "
+        "You have access to complete patient data and SHAP (Shapley Additive Explanations) values that reveal exactly "
+        "how the model reached its prediction.\n\n"
+        "ANALYTICAL FRAMEWORK:\n"
+        "1. Complete Context Integration: Use ALL provided patient features, risk probabilities, thresholds, and SHAP values\n"
+        "2. Mechanistic Explanation: Explain HOW specific features interact to push the probability above/below the clinical threshold\n"
+        "3. Clinical Reasoning: Connect statistical findings to clinical implications\n"
+        "4. Risk Stratification: Clearly articulate why this patient falls into their risk category\n"
+        "5. Actionable Insights: Provide evidence-based recommendations for clinical validation\n\n"
+        "STRUCTURED OUTPUT REQUIREMENTS:\n"
+        "**Executive Summary** (3-4 sentences): Overall risk assessment and key drivers\n"
+        "**Primary Risk Drivers** (detailed analysis): Features with positive SHAP values, their clinical significance, and magnitude of impact\n"
+        "**Protective Factors** (detailed analysis): Features with negative SHAP values and their mitigating effects\n"
+        "**Threshold Analysis**: Explain how the patient's probability relates to the optimal clinical threshold and clinical implications\n"
+        "**Clinical Synthesis**: Integrated assessment considering all factors\n"
+        "**Recommendations**: Specific next steps for clinical evaluation, monitoring, or intervention\n"
+        "**Professional Disclaimer**: Standard medical AI safety notice\n\n"
+        "CLINICAL PRECISION REQUIREMENTS:\n"
+        "- Use precise medical terminology appropriate for an academic panel\n"
+        "- Quantify impacts using actual SHAP values and probability changes\n"
+        "- Distinguish between statistical associations and clinical causation\n"
+        "- Reference specific feature values and their contributions\n"
+        "- NEVER fabricate data; explicitly state if information is missing\n"
     )
 
 
@@ -252,7 +265,9 @@ def generate_groq_report(
     level: str,
     base_val: float,
     top_features: list[dict],
+    all_features: list[dict],
     patient_data: dict,
+    shap_diagnostics: dict,
 ) -> tuple[str | None, str | None]:
     client, client_error = get_groq_client()
     if client_error:
@@ -261,6 +276,7 @@ def generate_groq_report(
     try:
         model_name = get_groq_model()
 
+        # Enhanced comprehensive payload for AI analysis
         payload = {
             "disease": disease,
             "disease_display_name": DISEASE_DISPLAY_NAMES.get(disease, disease),
@@ -268,9 +284,20 @@ def generate_groq_report(
             "optimal_clinical_threshold": round(threshold, 4),
             "is_clinically_at_risk": prob >= threshold,
             "risk_level": level,
+            "probability_above_threshold": round(prob - threshold, 4) if prob >= threshold else round(threshold - prob, 4),
             "shap_expected_value": round(base_val, 6),
             "top_shap_features": top_features,
+            "all_shap_features": all_features,
             "patient_features": patient_data,
+            "shap_diagnostics": shap_diagnostics,
+            "feature_labels": FEATURE_LABELS,
+            "clinical_context": {
+                "total_features_analyzed": len(all_features),
+                "features_with_positive_impact": len([f for f in all_features if f["contribution"] > 0]),
+                "features_with_negative_impact": len([f for f in all_features if f["contribution"] < 0]),
+                "strongest_risk_driver": max(all_features, key=lambda x: x["contribution"]) if all_features else None,
+                "strongest_protective_factor": min(all_features, key=lambda x: x["contribution"]) if all_features else None,
+            }
         }
 
         prompt = f"{groq_preprompt()}\nCase payload:\n{payload}"
@@ -380,6 +407,14 @@ def run_inference(disease, full_data_dict):
     final_shap_logit = base_val + full_sum
     final_shap_prob = 1 / (1 + math.exp(-final_shap_logit))
     
+    shap_diagnostics = {
+        "baseline_logodds": round(base_val, 6),
+        "explained_logodds": round(final_shap_logit, 6),
+        "explained_probability": round(final_shap_prob, 6),
+        "ensemble_probability": round(proba, 6),
+        "explanation_gap": round(proba - final_shap_prob, 6),
+    }
+    
     local_report = build_local_report(
         disease=disease,
         prob=proba,
@@ -398,7 +433,9 @@ def run_inference(disease, full_data_dict):
         level=risk_level,
         base_val=base_val,
         top_features=top_features,
+        all_features=feature_contributions,
         patient_data=full_data_dict,
+        shap_diagnostics=shap_diagnostics,
     )
 
     final_report = groq_report if groq_report else local_report
@@ -411,13 +448,8 @@ def run_inference(disease, full_data_dict):
         "optimal_threshold": round(optimal_threshold, 4),
         "shap_base": base_val,
         "shap_features": top_features,
-        "shap_diagnostics": {
-            "baseline_logodds": round(base_val, 6),
-            "explained_logodds": round(final_shap_logit, 6),
-            "explained_probability": round(final_shap_prob, 6),
-            "ensemble_probability": round(proba, 6),
-            "explanation_gap": round(proba - final_shap_prob, 6),
-        },
+        "all_shap_features": feature_contributions,
+        "shap_diagnostics": shap_diagnostics,
         "local_interpretation_report": local_report,
         "ai_interpretation_report": final_report,
         "ai_report_source": report_source,
@@ -434,15 +466,46 @@ async def chat_with_ai(req: ChatRequest):
     try:
         model_name = get_groq_model()
         
-        # Build system context
-        context = (
-            f"You are a clinical decision-support AI. The user is asking about their {req.context_disease} risk assessment. "
-            f"Assessment Results: Probability: {req.risk_probability:.2%}, Level: {req.risk_level}. "
-            "Patient context provided in payload. Be helpful, professional, and clear. "
-            "Maintain a safety-first clinical tone. Do not diagnose."
+        # Enhanced comprehensive clinical context for Q&A
+        patient_summary = "\n".join([f"  - {FEATURE_LABELS.get(k, k)}: {v}" for k, v in (req.patient_payload or {}).items()])
+        
+        # Detailed SHAP analysis
+        positive_features = [f for f in req.features if f.get("contribution", 0) > 0]
+        negative_features = [f for f in req.features if f.get("contribution", 0) < 0]
+        
+        shap_analysis = []
+        if positive_features:
+            shap_analysis.append("Risk-increasing factors:")
+            for f in sorted(positive_features, key=lambda x: x.get("contribution", 0), reverse=True)[:5]:
+                shap_analysis.append(f"  - {FEATURE_LABELS.get(f.get('name', ''), f.get('name', ''))}: +{f.get('contribution', 0):.4f}")
+        
+        if negative_features:
+            shap_analysis.append("Protective factors:")
+            for f in sorted(negative_features, key=lambda x: x.get("contribution", 0))[:5]:
+                shap_analysis.append(f"  - {FEATURE_LABELS.get(f.get('name', ''), f.get('name', ''))}: {f.get('contribution', 0):.4f}")
+        
+        shap_summary = "\n".join(shap_analysis)
+        
+        system_context = (
+            f"You are an expert clinical decision-support AI specialized in {req.context_disease.upper()} risk assessment. "
+            f"You have complete access to this patient's risk evaluation data including all clinical features and SHAP explanations.\n\n"
+            f"COMPREHENSIVE PATIENT ASSESSMENT:\n"
+            f"Disease: {req.context_disease.upper()}\n"
+            f"Predicted Probability: {req.risk_probability:.2%}\n"
+            f"Risk Stratification: {req.risk_level}\n"
+            f"\nPATIENT CLINICAL PROFILE:\n{patient_summary}\n\n"
+            f"SHAP FEATURE CONTRIBUTIONS:\n{shap_summary}\n\n"
+            f"CLINICAL GUIDELINES FOR RESPONSE:\n"
+            f"1. Use ALL provided patient data and SHAP values in your analysis\n"
+            f"2. Explain how specific features contribute to the risk probability\n"
+            f"3. Reference both risk-increasing and protective factors with their SHAP values\n"
+            f"4. Provide clinically relevant insights based on the complete data context\n"
+            f"5. Use professional medical terminology appropriate for healthcare providers\n"
+            f"6. Never provide definitive diagnosis - use 'The model indicates...' or 'This suggests...'\n"
+            f"7. Focus on evidence-based recommendations for clinical follow-up\n"
         )
         
-        messages = [{"role": "system", "content": context}]
+        messages = [{"role": "system", "content": system_context}]
         
         # Add history
         for msg in req.history:

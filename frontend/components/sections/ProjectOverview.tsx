@@ -51,10 +51,8 @@ export default function ProjectOverview() {
 
   const diseases = [
     { name: 'Type-2 Diabetes', status: 'active', accuracy: '75.1%', auc: '0.83' },
-    { name: 'Cardiovascular Disease', status: 'active', accuracy: '82.4%', auc: '0.88' },
+    { name: 'Heart Disease', status: 'active', accuracy: '82.4%', auc: '0.88' },
     { name: 'Stroke Risk', status: 'active', accuracy: '78.2%', auc: '0.85' },
-    { name: 'Hypertension', status: 'planned', accuracy: '—', auc: '—' },
-    { name: 'Chronic Kidney Disease', status: 'planned', accuracy: '—', auc: '—' },
   ];
 
   const noveltyFeatures = [

@@ -6,7 +6,7 @@ import numpy as np
 import shap
 import os
 from dotenv import load_dotenv
-from google import genai
+from groq import Groq
 import math
 import pandas as pd
 
@@ -70,6 +70,16 @@ class PatientData(BaseModel):
     NoDocbcCost: float; GenHlth: float; MentHlth: float; PhysHlth: float
     DiffWalk: float; Sex: float; Age: float; Education: float; Income: float
 
+
+class ChatRequest(BaseModel):
+    question: str
+    context_disease: str
+    risk_probability: float
+    risk_level: str
+    features: list[dict] = []
+    patient_payload: dict | None = None
+    history: list[dict] = []
+
 # State class to hold dynamically loaded artifacts
 class MultiState:
     models = {}
@@ -81,30 +91,18 @@ class MultiState:
 state = MultiState()
 
 
-def get_gemini_model_candidates() -> list[str]:
-    candidates = [
-        os.getenv("GEMINI_MODEL", "").strip(),
-        "gemini-2.5-flash",
-        "gemini-2.0-flash",
-        "gemini-pro-latest",
-    ]
-    seen = set()
-    unique = []
-    for name in candidates:
-        if name and name not in seen:
-            seen.add(name)
-            unique.append(name)
-    return unique
+def get_groq_model() -> str:
+    return os.getenv("GROQ_MODEL", "qwen-2.5-32b").strip()
 
 
-def get_gemini_client():
-    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+def get_groq_client():
+    api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
-        return None, "GEMINI_API_KEY is not configured."
+        return None, "GROQ_API_KEY is not configured."
     try:
-        return genai.Client(api_key=api_key), None
+        return Groq(api_key=api_key), None
     except Exception as exc:
-        return None, f"Failed to initialize Gemini client: {exc}"
+        return None, f"Failed to initialize Groq client: {exc}"
 
 
 @app.on_event("startup")
@@ -231,7 +229,7 @@ def build_local_report(
     return "\n".join(lines)
 
 
-def gemini_preprompt() -> str:
+def groq_preprompt() -> str:
     return (
         "You are a clinical decision-support assistant for risk interpretation. "
         "Generate a concise but detailed, patient-specific interpretation report using SHAP data. "
@@ -247,7 +245,7 @@ def gemini_preprompt() -> str:
     )
 
 
-def generate_gemini_report(
+def generate_groq_report(
     disease: str,
     prob: float,
     threshold: float,
@@ -256,12 +254,12 @@ def generate_gemini_report(
     top_features: list[dict],
     patient_data: dict,
 ) -> tuple[str | None, str | None]:
-    client, client_error = get_gemini_client()
+    client, client_error = get_groq_client()
     if client_error:
         return None, client_error
 
     try:
-        model_candidates = get_gemini_model_candidates()
+        model_name = get_groq_model()
 
         payload = {
             "disease": disease,
@@ -275,77 +273,73 @@ def generate_gemini_report(
             "patient_features": patient_data,
         }
 
-        prompt = f"{gemini_preprompt()}\nCase payload:\n{payload}"
-        model_errors = []
+        prompt = f"{groq_preprompt()}\nCase payload:\n{payload}"
         
-        for model_name in model_candidates:
-            for attempt in range(3):
-                try:
-                    response = client.models.generate_content(model=model_name, contents=prompt)
-                    text = (response.text or "").strip()
-                    if text:
-                        return text, None
-                    model_errors.append(f"{model_name}: empty response")
-                    break
-                except Exception as model_exc:
-                    error_str = str(model_exc)
-                    if "503" in error_str or "UNAVAILABLE" in error_str:
-                        if attempt < 2:
-                            import time
-                            time.sleep(2 ** attempt)
-                            continue
-                    elif "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
-                        model_errors.append(f"{model_name}: quota exceeded")
-                        break
-                    else:
-                        if attempt < 2:
-                            import time
-                            time.sleep(1)
-                            continue
-                        model_errors.append(f"{model_name}: {model_exc}")
+        for attempt in range(3):
+            try:
+                completion = client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": groq_preprompt()},
+                        {"role": "user", "content": f"Case payload:\n{payload}"}
+                    ],
+                    temperature=0.6,
+                    max_completion_tokens=4096,
+                    top_p=0.95,
+                    stream=False
+                )
+                text = (completion.choices[0].message.content or "").strip()
+                if text:
+                    return text, None
+                return None, "Groq returned an empty response."
+            except Exception as exc:
+                error_str = str(exc)
+                if "429" in error_str or "rate_limit" in error_str:
+                    if attempt < 2:
+                        import time
+                        time.sleep(2 ** attempt)
+                        continue
+                return None, f"Groq generation failed: {exc}"
 
-        return None, "Gemini generation failed for all models. " + " | ".join(model_errors)
+        return None, "Groq generation failed after retries."
     except Exception as exc:
-        return None, f"Gemini generation failed: {exc}"
+        return None, f"Groq generation error: {exc}"
 
 
-@app.get("/api/gemini-health")
-async def gemini_health():
-    client, client_error = get_gemini_client()
-    model_candidates = get_gemini_model_candidates()
+@app.get("/api/groq-health")
+async def groq_health():
+    client, client_error = get_groq_client()
+    model_name = get_groq_model()
 
     if client_error:
         return {
             "status": "not_configured",
             "configured": False,
-            "models_tried": model_candidates,
             "message": client_error,
         }
 
-    health_prompt = "Reply with exactly one short line: GEMINI_OK. Do not add markdown or extra words."
-    errors = []
-    for model_name in model_candidates:
-        try:
-            response = client.models.generate_content(model=model_name, contents=health_prompt)
-            text = (response.text or "").strip()
-            return {
-                "status": "ok",
-                "configured": True,
-                "working_model": model_name,
-                "models_tried": model_candidates,
-                "response_preview": text[:120],
-                "message": "Gemini API key, project, and model are usable.",
-            }
-        except Exception as exc:
-            errors.append({"model": model_name, "error": str(exc)})
-
-    return {
-        "status": "error",
-        "configured": True,
-        "models_tried": model_candidates,
-        "message": "Gemini client initialized, but all model checks failed.",
-        "errors": errors,
-    }
+    health_prompt = "Reply with exactly one short line: GROQ_OK. Do not add markdown or extra words."
+    try:
+        completion = client.chat.completions.create(
+            model=model_name,
+            messages=[{"role": "user", "content": health_prompt}],
+            max_completion_tokens=10,
+            stream=False
+        )
+        text = (completion.choices[0].message.content or "").strip()
+        return {
+            "status": "ok",
+            "configured": True,
+            "working_model": model_name,
+            "response_preview": text[:120],
+            "message": "Groq API key and model are usable.",
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "configured": True,
+            "message": f"Groq check failed: {exc}",
+        }
 
 
 def run_inference(disease, full_data_dict):
@@ -397,7 +391,7 @@ def run_inference(disease, full_data_dict):
         patient_data=full_data_dict,
     )
     
-    gemini_report, gemini_error = generate_gemini_report(
+    groq_report, groq_error = generate_groq_report(
         disease=disease,
         prob=proba,
         threshold=optimal_threshold,
@@ -407,8 +401,8 @@ def run_inference(disease, full_data_dict):
         patient_data=full_data_dict,
     )
 
-    final_report = gemini_report if gemini_report else local_report
-    report_source = "gemini" if gemini_report else "local_fallback"
+    final_report = groq_report if groq_report else local_report
+    report_source = "groq" if groq_report else "local_fallback"
 
     return {
         "prob": round(proba, 4),
@@ -427,8 +421,46 @@ def run_inference(disease, full_data_dict):
         "local_interpretation_report": local_report,
         "ai_interpretation_report": final_report,
         "ai_report_source": report_source,
-        "ai_report_error": gemini_error,
+        "ai_report_error": groq_error,
     }
+
+
+@app.post("/api/chat")
+async def chat_with_ai(req: ChatRequest):
+    client, client_error = get_groq_client()
+    if client_error:
+        return {"response": f"Chat unavailable: {client_error}"}
+
+    try:
+        model_name = get_groq_model()
+        
+        # Build system context
+        context = (
+            f"You are a clinical decision-support AI. The user is asking about their {req.context_disease} risk assessment. "
+            f"Assessment Results: Probability: {req.risk_probability:.2%}, Level: {req.risk_level}. "
+            "Patient context provided in payload. Be helpful, professional, and clear. "
+            "Maintain a safety-first clinical tone. Do not diagnose."
+        )
+        
+        messages = [{"role": "system", "content": context}]
+        
+        # Add history
+        for msg in req.history:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+            
+        # Add current question
+        messages.append({"role": "user", "content": req.question})
+        
+        completion = client.chat.completions.create(
+            model=model_name,
+            messages=messages,
+            temperature=0.6,
+            max_completion_tokens=2048,
+        )
+        
+        return {"response": completion.choices[0].message.content.strip()}
+    except Exception as exc:
+        return {"response": f"Chat failed: {exc}"}
 
 
 @app.post("/api/predict/all")

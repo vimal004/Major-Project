@@ -11,3 +11,4 @@ gunicorn
 httpx
 google-genai
 python-dotenv
+groq

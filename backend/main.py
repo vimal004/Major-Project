@@ -5,8 +5,12 @@ import joblib
 import numpy as np
 import shap
 import os
+from dotenv import load_dotenv
+import google.generativeai as genai
+import math
 
 app = FastAPI(title="XAI-CDSS Multi-Disease API")
+load_dotenv()
 
 # Configure CORS
 app.add_middleware(
@@ -25,6 +29,37 @@ FEATURE_NAMES = [
     "NoDocbcCost", "GenHlth", "MentHlth", "PhysHlth", 
     "DiffWalk", "Sex", "Age", "Education", "Income"
 ]
+
+DISEASE_DISPLAY_NAMES = {
+    "diabetes": "Diabetes",
+    "heart": "Heart Disease",
+    "stroke": "Stroke",
+}
+
+FEATURE_LABELS = {
+    "HighBP": "High blood pressure",
+    "HighChol": "High cholesterol",
+    "CholCheck": "Recent cholesterol check",
+    "BMI": "Body mass index",
+    "Smoker": "Smoking status",
+    "Stroke": "Prior stroke history",
+    "HeartDiseaseorAttack": "Prior heart disease/heart attack history",
+    "Diabetes": "Diabetes history",
+    "PhysActivity": "Physical activity",
+    "Fruits": "Fruit intake",
+    "Veggies": "Vegetable intake",
+    "HvyAlcoholConsump": "Heavy alcohol consumption",
+    "AnyHealthcare": "Healthcare access",
+    "NoDocbcCost": "Could not see doctor due to cost",
+    "GenHlth": "General health score",
+    "MentHlth": "Days of poor mental health",
+    "PhysHlth": "Days of poor physical health",
+    "DiffWalk": "Difficulty walking",
+    "Sex": "Sex",
+    "Age": "Age group",
+    "Education": "Education level",
+    "Income": "Income level",
+}
 
 class PatientData(BaseModel):
     # Map directly to the 22 features in the dataset
@@ -47,6 +82,171 @@ async def startup():
         # Extract XGBoost for SHAP
         xgb_mod = state.models[disease].named_estimators_["xgb"]
         state.explainers[disease] = shap.TreeExplainer(xgb_mod)
+
+
+def classify_risk(prob: float) -> str:
+    if prob > 0.7:
+        return "High"
+    if prob > 0.4:
+        return "Moderate"
+    return "Low"
+
+
+def shap_impact_band(value: float) -> str:
+    mag = abs(value)
+    if mag >= 0.20:
+        return "strong"
+    if mag >= 0.08:
+        return "moderate"
+    return "mild"
+
+
+def build_local_report(
+    disease: str,
+    prob: float,
+    level: str,
+    base_val: float,
+    top_features: list[dict],
+    all_features: list[dict],
+    patient_data: dict,
+) -> str:
+    disease_name = DISEASE_DISPLAY_NAMES.get(disease, disease.title())
+    lines = [
+        f"{disease_name} Local SHAP Interpretation Report",
+        f"Predicted risk: {level} ({prob:.2%})",
+        f"Model baseline (SHAP expected value): {base_val:.4f}",
+        "",
+        "Top feature-level contributors (patient-specific):",
+    ]
+
+    if not top_features:
+        lines.append("- No SHAP contributions were available for this prediction.")
+    else:
+        for i, feat in enumerate(top_features, start=1):
+            fname = feat["name"]
+            sval = float(feat["contribution"])
+            direction = "increases" if sval >= 0 else "decreases"
+            impact = shap_impact_band(sval)
+            readable = FEATURE_LABELS.get(fname, fname)
+            pval = patient_data.get(fname, "N/A")
+            lines.append(
+                f"- {i}. {readable} ({fname}) = {pval}: {impact} factor, "
+                f"{direction} risk (SHAP {sval:+.4f})."
+            )
+
+    # Additive SHAP walkthrough (log-odds domain for TreeExplainer on XGBoost)
+    shown_sum = sum(float(item["contribution"]) for item in top_features)
+    full_sum = sum(float(item["contribution"]) for item in all_features)
+    residual_other = full_sum - shown_sum
+    final_shap_logit = base_val + full_sum
+    final_shap_prob = 1 / (1 + math.exp(-final_shap_logit))
+
+    positive_terms = [f for f in top_features if float(f["contribution"]) > 0]
+    negative_terms = [f for f in top_features if float(f["contribution"]) < 0]
+
+    lines.extend(
+        [
+            "",
+            "How pushes and pulls add up (SHAP additive path):",
+            f"- Baseline score (log-odds): {base_val:+.4f}",
+            f"- Sum of shown top contributions: {shown_sum:+.4f}",
+            f"- Residual contribution from remaining features: {residual_other:+.4f}",
+            f"- Final explained score (log-odds) = baseline + all feature SHAP = {final_shap_logit:+.4f}",
+            f"- Final explained probability (after sigmoid) ≈ {final_shap_prob:.2%}",
+        ]
+    )
+
+    if positive_terms:
+        lines.append("- Main pushes upward (increase risk):")
+        for feat in positive_terms[:6]:
+            readable = FEATURE_LABELS.get(feat["name"], feat["name"])
+            lines.append(f"  - {readable}: {float(feat['contribution']):+.4f}")
+    if negative_terms:
+        lines.append("- Main pulls downward (decrease risk):")
+        for feat in negative_terms[:6]:
+            readable = FEATURE_LABELS.get(feat["name"], feat["name"])
+            lines.append(f"  - {readable}: {float(feat['contribution']):+.4f}")
+
+    lines.extend(
+        [
+            "",
+            "Clinical interpretation template:",
+            f"- Overall assessment: {level} risk profile for {disease_name.lower()}.",
+            "- Risk-driving factors: prioritize positively contributing features above.",
+            "- Protective factors: reinforce negatively contributing features above.",
+            "- Suggested next steps: confirm with clinical history, vitals, and labs.",
+            "- Monitoring: repeat assessment after interventions or status changes.",
+            "",
+            "Technical note: SHAP add-up above explains the XGBoost explainer path; "
+            "the final served risk uses the ensemble probability output.",
+            "Safety note: This tool supports clinical decision-making and is not a diagnosis.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def gemini_preprompt() -> str:
+    return (
+        "You are a clinical decision-support assistant for risk interpretation. "
+        "Generate a concise but detailed, patient-specific interpretation report using SHAP data. "
+        "Do not provide definitive diagnosis. Do not fabricate any missing values. "
+        "Use only the provided patient features and model outputs.\n\n"
+        "Output format:\n"
+        "1) Overall risk interpretation (2-4 sentences)\n"
+        "2) Key risk-increasing factors (bullet list)\n"
+        "3) Key risk-reducing/protective factors (bullet list)\n"
+        "4) Clinically sensible next-step checks/interventions (bullet list)\n"
+        "5) Safety disclaimer (single sentence)\n"
+    )
+
+
+def generate_gemini_report(
+    disease: str,
+    prob: float,
+    level: str,
+    base_val: float,
+    top_features: list[dict],
+    patient_data: dict,
+) -> tuple[str | None, str | None]:
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        return None, "GEMINI_API_KEY is not configured."
+
+    try:
+        genai.configure(api_key=api_key)
+        model_candidates = [
+            os.getenv("GEMINI_MODEL", "").strip(),
+            "gemini-2.0-flash",
+            "gemini-1.5-flash",
+        ]
+        model_candidates = [m for m in model_candidates if m]
+
+        payload = {
+            "disease": disease,
+            "disease_display_name": DISEASE_DISPLAY_NAMES.get(disease, disease),
+            "predicted_probability": round(prob, 4),
+            "risk_level": level,
+            "shap_expected_value": round(base_val, 6),
+            "top_shap_features": top_features,
+            "patient_features": patient_data,
+        }
+
+        prompt = f"{gemini_preprompt()}\nCase payload:\n{payload}"
+        model_errors = []
+        for model_name in model_candidates:
+            try:
+                model = genai.GenerativeModel(model_name)
+                response = model.generate_content(prompt)
+                text = (response.text or "").strip()
+                if text:
+                    return text, None
+                model_errors.append(f"{model_name}: empty response")
+            except Exception as model_exc:
+                model_errors.append(f"{model_name}: {model_exc}")
+
+        return None, "Gemini generation failed for all models. " + " | ".join(model_errors)
+    except Exception as exc:
+        return None, f"Gemini generation failed: {exc}"
 
 def run_inference(disease, full_data_dict):
     # Dynamically remove the target column for this specific model
@@ -79,18 +279,44 @@ def run_inference(disease, full_data_dict):
             "contribution": float(val)
         })
     
-    # Sort by absolute contribution and take top 8
+    # Sort by absolute contribution and keep both full + top views
     feature_contributions.sort(key=lambda x: abs(x["contribution"]), reverse=True)
     top_features = feature_contributions[:8]
     
     # Calculate base value (expected value)
     base_val = float(state.explainers[disease].expected_value)
     
+    risk_level = classify_risk(proba)
+    local_report = build_local_report(
+        disease=disease,
+        prob=proba,
+        level=risk_level,
+        base_val=base_val,
+        top_features=top_features,
+        all_features=feature_contributions,
+        patient_data=full_data_dict,
+    )
+    gemini_report, gemini_error = generate_gemini_report(
+        disease=disease,
+        prob=proba,
+        level=risk_level,
+        base_val=base_val,
+        top_features=top_features,
+        patient_data=full_data_dict,
+    )
+
+    final_report = gemini_report if gemini_report else local_report
+    report_source = "gemini" if gemini_report else "local_fallback"
+
     return {
         "prob": round(proba, 4),
-        "level": "High" if proba > 0.7 else "Moderate" if proba > 0.4 else "Low",
+        "level": risk_level,
         "shap_base": base_val,
-        "shap_features": top_features
+        "shap_features": top_features,
+        "local_interpretation_report": local_report,
+        "ai_interpretation_report": final_report,
+        "ai_report_source": report_source,
+        "ai_report_error": gemini_error,
     }
 
 @app.post("/api/predict/all")

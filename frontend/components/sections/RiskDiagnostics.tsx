@@ -37,8 +37,6 @@ import {
   Pie,
 } from 'recharts';
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_BASE_URL || 'http://localhost:8000';
-
 interface RiskDiagnosticsProps {
   assessmentData: any;
 }
@@ -158,17 +156,6 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
   const [activeTab, setActiveTab] = useState<DiseaseType>('diabetes');
   const [animateGauge, setAnimateGauge] = useState(false);
 
-  // Interpretations per disease
-  const [interpretations, setInterpretations] = useState<Record<string, string | null>>({
-    diabetes: null, heart: null, stroke: null
-  });
-  const [interpretationLoading, setInterpretationLoading] = useState<Record<string, boolean>>({
-    diabetes: false, heart: false, stroke: false
-  });
-  const [interpretationErrors, setInterpretationErrors] = useState<Record<string, string | null>>({
-    diabetes: null, heart: null, stroke: null
-  });
-
   // Chat state
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
@@ -186,15 +173,6 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
       chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [chatMessages]);
-
-  useEffect(() => {
-    if (assessmentData?.status === 'success') {
-      // Auto-fetch interpretation for the currently active tab if not loaded
-      if (!interpretations[activeTab] && !interpretationLoading[activeTab] && !interpretationErrors[activeTab]) {
-        fetchInterpretation(activeTab);
-      }
-    }
-  }, [assessmentData, activeTab]);
 
   if (!assessmentData || assessmentData.status !== 'success' || !assessmentData.assessments) {
     return (
@@ -225,38 +203,6 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
 
   const patientId: string = assessmentData.patientId || 'PT-0000';
   const assessments = assessmentData.assessments;
-
-  const fetchInterpretation = async (disease: DiseaseType) => {
-    const data = assessments[disease];
-    if (!data) return;
-
-    setInterpretationLoading(prev => ({ ...prev, [disease]: true }));
-    setInterpretationErrors(prev => ({ ...prev, [disease]: null }));
-
-    try {
-      const response = await fetch(`${BACKEND_URL}/api/interpret`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          disease,
-          risk_probability: data.prob,
-          risk_level: data.level,
-          base_value: data.shap_base || 0.5,
-          features: data.shap_features || [],
-          patient_payload: assessmentData.payload || null,
-        }),
-      });
-
-      if (!response.ok) throw new Error('Failed to fetch interpretation');
-      
-      const result = await response.json();
-      setInterpretations(prev => ({ ...prev, [disease]: result.interpretation }));
-    } catch (err: any) {
-      setInterpretationErrors(prev => ({ ...prev, [disease]: err.message || 'Error fetching interpretation' }));
-    } finally {
-      setInterpretationLoading(prev => ({ ...prev, [disease]: false }));
-    }
-  };
 
   const sendChatMessage = async (question?: string) => {
     const msg = question || chatInput.trim();
@@ -309,6 +255,10 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
   const riskLevel = currentAssessment.level || 'Unknown';
   const baseValue = currentAssessment.shap_base || 0.5;
   const shapFeatures = currentAssessment.shap_features || [];
+  const localInterpretation = currentAssessment.local_interpretation_report || '';
+  const aiInterpretation = currentAssessment.ai_interpretation_report || '';
+  const aiReportSource = currentAssessment.ai_report_source || 'local_fallback';
+  const aiReportError = currentAssessment.ai_report_error || null;
 
   const getRiskStyle = (prob: number) => {
     if (prob >= 0.7) return { text: 'text-red-600', badgeBg: 'bg-red-50 text-red-700 border border-red-200', gaugeColor: '#dc2626' };
@@ -560,44 +510,75 @@ export default function RiskDiagnostics({ assessmentData }: RiskDiagnosticsProps
                   <CardTitle className="text-base flex items-center gap-2">
                     AI-Powered Clinical Interpretation
                     <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[9px] font-semibold bg-gradient-to-r from-indigo-50 to-purple-50 text-indigo-700 rounded-full border border-indigo-200">
-                      GEMINI AI
+                      {aiReportSource === 'gemini' ? 'GEMINI AI' : 'LOCAL FALLBACK'}
                     </span>
                   </CardTitle>
                 </div>
               </div>
-              {interpretations[activeTab] && (
-                <button
-                  onClick={() => fetchInterpretation(activeTab)}
-                  disabled={interpretationLoading[activeTab]}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium text-indigo-600 bg-indigo-50 border border-indigo-200 rounded-full hover:bg-indigo-100 transition-colors disabled:opacity-50"
-                >
-                  <RefreshCw className={`w-3 h-3 ${interpretationLoading[activeTab] ? 'animate-spin' : ''}`} /> Regenerate
-                </button>
-              )}
+              <div className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium text-indigo-600 bg-indigo-50 border border-indigo-200 rounded-full">
+                <RefreshCw className="w-3 h-3" /> Derived from latest backend assessment
+              </div>
             </div>
           </CardHeader>
           <CardContent>
-            {interpretationLoading[activeTab] ? (
-              <div className="flex flex-col items-center justify-center py-12 space-y-4">
-                <Loader2 className="w-8 h-8 text-indigo-600 animate-spin" />
-                <p className="text-sm font-medium text-gray-900">Gemini AI is analyzing results...</p>
-              </div>
-            ) : interpretationErrors[activeTab] ? (
-              <div className="bg-red-50 border border-red-200 rounded-2xl p-5 space-y-3">
-                <div className="flex items-center gap-2">
-                  <AlertTriangle className="w-4 h-4 text-red-500" />
-                  <span className="text-sm font-medium text-red-800">Interpretation Unavailable</span>
+            {aiInterpretation ? (
+              <div className="space-y-3">
+                {aiReportError && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-[11px] text-amber-700">
+                    AI generation warning: {aiReportError}
+                  </div>
+                )}
+                <div className="bg-gradient-to-br from-gray-50 to-indigo-50/30 border border-gray-200 rounded-2xl p-5 sm:p-6">
+                  {renderMarkdown(aiInterpretation)}
                 </div>
-                <p className="text-xs text-red-600">{interpretationErrors[activeTab]}</p>
-                <button onClick={() => fetchInterpretation(activeTab)} className="px-4 py-2 text-xs font-medium text-red-700 bg-red-100 rounded-full">Try Again</button>
-              </div>
-            ) : interpretations[activeTab] ? (
-              <div className="bg-gradient-to-br from-gray-50 to-indigo-50/30 border border-gray-200 rounded-2xl p-5 sm:p-6">
-                {renderMarkdown(interpretations[activeTab]!)}
               </div>
             ) : (
-              <div className="text-center py-8">
-                <button onClick={() => fetchInterpretation(activeTab)} className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm">Generate Interpretation</button>
+              <div className="bg-gray-50 border border-gray-200 rounded-2xl p-6 text-sm text-gray-500">
+                AI interpretation is unavailable for this assessment.
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Local SHAP Interpretation (Offline) */}
+        <Card className="animate-fade-in-up stagger-3 border-2 border-blue-100">
+          <CardHeader className="pb-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-blue-100 rounded-xl">
+                  <FileText className="w-4 h-4 text-blue-700" />
+                </div>
+                <div>
+                  <CardTitle className="text-base flex items-center gap-2">
+                    Local SHAP Interpretation Report (Offline)
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[9px] font-semibold bg-blue-50 text-blue-700 rounded-full border border-blue-200">
+                      NO INTERNET REQUIRED
+                    </span>
+                  </CardTitle>
+                  <p className="text-[11px] text-gray-400 mt-0.5">
+                    Reviewer-friendly explanation of what SHAP values mean and how each feature affects risk.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="bg-blue-50/60 border border-blue-200 rounded-xl p-4 space-y-2">
+              <h4 className="text-sm font-semibold text-blue-900">How to read SHAP scores</h4>
+              <ul className="list-disc pl-5 text-xs text-blue-900/90 space-y-1.5 leading-relaxed">
+                <li><strong>Sign of SHAP value:</strong> positive values push prediction toward higher risk; negative values push toward lower risk.</li>
+                <li><strong>Magnitude:</strong> larger absolute values indicate stronger influence on this patient&apos;s prediction.</li>
+                <li><strong>Local explanation:</strong> SHAP explains this one patient&apos;s output, not global population-level causality.</li>
+                <li><strong>Overall score relation:</strong> baseline risk is adjusted by feature contributions to produce the final probability.</li>
+              </ul>
+            </div>
+            {localInterpretation ? (
+              <div className="bg-white border border-gray-200 rounded-2xl p-5 sm:p-6">
+                {renderMarkdown(localInterpretation)}
+              </div>
+            ) : (
+              <div className="bg-gray-50 border border-gray-200 rounded-2xl p-6 text-sm text-gray-500">
+                Local SHAP interpretation was not returned by backend for this assessment.
               </div>
             )}
           </CardContent>
